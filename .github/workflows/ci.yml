@@ -66,9 +66,7 @@ jobs:
       
       - name: Build examples
         run: |
-          cargo build --example basic --verbose
-          cargo build --example echo_server --verbose
-          cargo build --example rate_limiter --verbose
+          cargo build --example pipeline_demo --verbose
 
   coverage:
     name: Code Coverage
