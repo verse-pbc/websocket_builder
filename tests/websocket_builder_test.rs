@@ -220,17 +220,11 @@ fn test_websocket_error_get_state() {
 
     // Test all error variants
     let errors = vec![
-        WebsocketError::IoError(
-            std::io::Error::new(std::io::ErrorKind::Other, "io error"),
-            state.clone(),
-        ),
+        WebsocketError::IoError(std::io::Error::other("io error"), state.clone()),
         WebsocketError::InvalidTargetUrl(state.clone()),
         WebsocketError::NoAddressesFound("example.com".to_string(), state.clone()),
         WebsocketError::HandlerError(
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "handler error",
-            )),
+            Box::new(std::io::Error::other("handler error")),
             state.clone(),
         ),
         WebsocketError::MissingMiddleware(state.clone()),
@@ -331,10 +325,7 @@ fn test_websocket_error_display() {
     assert!(format!("{}", no_addresses).contains("example.com"));
 
     let handler_error = WebsocketError::HandlerError(
-        Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "custom error",
-        )),
+        Box::new(std::io::Error::other("custom error")),
         state.clone(),
     );
     assert!(format!("{}", handler_error).contains("custom error"));
