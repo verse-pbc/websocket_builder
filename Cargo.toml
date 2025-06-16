@@ -1,0 +1,45 @@
+[package]
+name = "websocket_builder"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daniel Cadenas <dcadenas@gmail.com>"]
+description = "A flexible WebSocket builder framework with middleware support"
+license = "MIT"
+repository = "https://github.com/verse-pbc/websocket_builder"
+keywords = ["websocket", "middleware", "async", "axum"]
+categories = ["network-programming", "web-programming", "asynchronous"]
+
+[lib]
+name = "websocket_builder"
+
+[dependencies]
+anyhow = "1.0.89"
+async-trait = "0.1.82"
+axum = { version = "0.7.9", features = ["ws"] }
+futures-util = "0.3.31"
+hickory-resolver = { version = "0.24.1", features = ["tokio-runtime"] }
+thiserror = "1.0.63"
+tokio = { version = "1.45", features = ["sync", "macros", "rt-multi-thread"] }
+tokio-util = { version = "0.7.12", features = ["rt"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.45", features = ["full"] }
+tokio-tungstenite = "0.26.1"
+tower-http = { version = "0.6.2", features = ["trace"] }
+pretty_assertions = "1.4.1"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+uuid = { version = "1.10", features = ["v4"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bench]]
+name = "websocket_performance"
+harness = false
+
+[[bench]]
+name = "simple_benchmark"
+harness = false
+
+[[test]]
+name = "integration_test"
+path = "tests/integration_test.rs"
