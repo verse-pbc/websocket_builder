@@ -11,6 +11,7 @@ use crate::{
 use anyhow::Result;
 use flume;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -38,6 +39,7 @@ where
     state_factory: F,
     channel_size: usize,
     connection_semaphore: Option<Arc<Semaphore>>,
+    max_connection_time: Option<Duration>,
 }
 
 impl<S, I, O, C, F> Clone for WebSocketHandler<S, I, O, C, F>
@@ -55,6 +57,7 @@ where
             state_factory: self.state_factory.clone(),
             channel_size: self.channel_size,
             connection_semaphore: self.connection_semaphore.clone(),
+            max_connection_time: self.max_connection_time,
         }
     }
 }
@@ -73,6 +76,7 @@ where
         state_factory: F,
         channel_size: usize,
         max_connections: Option<usize>,
+        max_connection_time: Option<Duration>,
     ) -> Self {
         Self {
             middlewares: Arc::new(middlewares),
@@ -80,6 +84,7 @@ where
             state_factory,
             channel_size,
             connection_semaphore: max_connections.map(|cap| Arc::new(Semaphore::new(cap))),
+            max_connection_time,
         }
     }
 
@@ -112,6 +117,25 @@ where
         // Create initial state wrapped in Arc<RwLock<>>
         let initial_state = self.state_factory.create_state(connection_token.clone());
         let shared_state = Arc::new(tokio::sync::RwLock::new(initial_state));
+
+        // Spawn timeout task if max_connection_time is configured
+        if let Some(max_time) = self.max_connection_time {
+            let token = connection_token.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = tokio::time::sleep(max_time) => {
+                        if !token.is_cancelled() {
+                            warn!(
+                                "Max connection time ({:?}) exceeded, initiating graceful shutdown",
+                                max_time
+                            );
+                            token.cancel();
+                        }
+                    }
+                    _ = token.cancelled() => {} // Connection already cancelled
+                }
+            });
+        }
 
         // Create channel for writer task
         let (websocket_tx, websocket_rx) = flume::bounded::<String>(self.channel_size);
@@ -221,7 +245,8 @@ where
                                 }
                             }
                             Some(Ok(WsMessage::Binary(data))) => {
-                                debug!("Received binary message with {} bytes", data.len());
+                                error!("Protocol violation: received binary message with {} bytes - terminating connection as binary messages are not supported", data.len());
+                                break;
                             }
                             Some(Ok(WsMessage::Ping(data))) => {
                                 debug!("Received ping with {} bytes", data.len());
@@ -304,6 +329,7 @@ where
     message_converter: C,
     channel_size: usize,
     max_connections: Option<usize>,
+    max_connection_time: Option<Duration>,
 }
 
 impl<S, I, O, C, F> WebSocketBuilder<S, I, O, C, F>
@@ -321,6 +347,7 @@ where
             message_converter,
             channel_size: 100,
             max_connections: None,
+            max_connection_time: None,
         }
     }
 
@@ -360,6 +387,22 @@ where
         self
     }
 
+    /// Sets the maximum duration for a connection.
+    ///
+    /// After this duration, the connection will be gracefully closed.
+    /// This can be used to implement connection rotation or to prevent
+    /// resource leaks from long-lived connections.
+    ///
+    /// # Arguments
+    /// * `duration` - The maximum duration for a connection
+    ///
+    /// # Returns
+    /// The builder instance for method chaining
+    pub fn with_max_connection_time(mut self, duration: Duration) -> Self {
+        self.max_connection_time = Some(duration);
+        self
+    }
+
     pub fn build(self) -> WebSocketHandler<S, I, O, C, F> {
         WebSocketHandler::new(
             self.middlewares,
@@ -367,6 +410,7 @@ where
             self.state_factory,
             self.channel_size,
             self.max_connections,
+            self.max_connection_time,
         )
     }
 }

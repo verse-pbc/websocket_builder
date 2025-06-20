@@ -275,3 +275,15 @@ fn test_max_connections_configuration() {
     // Handler should be created successfully with connection limit
     let _ = handler;
 }
+
+#[test]
+fn test_max_connection_time_configuration() {
+    use std::time::Duration;
+
+    let handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+        .with_max_connection_time(Duration::from_secs(3600)) // 1 hour
+        .build();
+
+    // Handler should be created successfully with connection timeout
+    let _ = handler;
+}

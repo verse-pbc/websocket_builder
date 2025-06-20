@@ -37,7 +37,7 @@ use axum::{
     routing::get,
     Router,
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
     InboundContext, MessageConverter, Middleware, OutboundContext, SendMessage, StateFactory,
@@ -151,6 +151,7 @@ fn build_pipeline_handler() -> Arc<PipelineDemoHandler> {
             .with_middleware(StageOneMiddleware)      // First in inbound, last in outbound
             .with_middleware(StageTwoEchoMiddleware)  // Second in inbound, first in outbound (for its echo)
             .with_max_connections(1000)               // Optional: limit concurrent connections
+            .with_max_connection_time(Duration::from_secs(3600)) // Optional: auto-close after 1 hour
             .build(),
     )
 }
