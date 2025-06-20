@@ -265,3 +265,13 @@ async fn test_middleware_ordering() {
     // Inbound: First -> Second -> Third
     // Outbound: Third -> Second -> First (reverse)
 }
+
+#[test]
+fn test_max_connections_configuration() {
+    let handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+        .with_max_connections(100)
+        .build();
+
+    // Handler should be created successfully with connection limit
+    let _ = handler;
+}

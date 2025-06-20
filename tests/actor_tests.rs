@@ -272,6 +272,7 @@ async fn test_actor_handler_creation_and_clone() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         100,
+        None,
     );
 
     // Test cloning
@@ -310,6 +311,7 @@ async fn test_state_actor_spawn_and_basic_commands() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         100,
+        None,
     );
 
     // Handler creation should succeed - we can't access private fields, so just test creation
@@ -340,6 +342,7 @@ async fn test_connection_lifecycle_with_middleware() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         100,
+        None,
     );
 
     // Test that the handler is created with middlewares - we can't access private fields
@@ -362,6 +365,7 @@ async fn test_error_handling_in_connect() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         100,
+        None,
     );
 
     // Create a mock WebSocket (this is tricky without actual WebSocket connection)
@@ -474,6 +478,7 @@ async fn test_channel_size_configuration() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         500, // Custom channel size
+        None,
     );
 
     // Can't access private fields, so just test that handler is created
@@ -512,6 +517,7 @@ async fn test_multiple_middleware_chain() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         100,
+        None,
     );
 
     // Test that all middlewares are registered - can't access private fields
@@ -525,6 +531,7 @@ async fn test_empty_middleware_chain() {
         ComprehensiveConverter,
         ComprehensiveStateFactory,
         100,
+        None,
     );
 
     // Handler should work with empty middleware chain - can't access private fields

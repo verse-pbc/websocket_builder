@@ -150,6 +150,7 @@ fn build_pipeline_handler() -> Arc<PipelineDemoHandler> {
         WebSocketBuilder::new(MinimalStateFactory, StringConverter)
             .with_middleware(StageOneMiddleware)      // First in inbound, last in outbound
             .with_middleware(StageTwoEchoMiddleware)  // Second in inbound, first in outbound (for its echo)
+            .with_max_connections(1000)               // Optional: limit concurrent connections
             .build(),
     )
 }

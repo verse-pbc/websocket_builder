@@ -11,14 +11,20 @@ use crate::{
 use anyhow::Result;
 use flume;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 // Type alias for middleware collection
 type MiddlewareCollection<S, I, O> =
     Arc<Vec<Arc<dyn Middleware<State = S, IncomingMessage = I, OutgoingMessage = O>>>>;
 
 /// WebSocket handler with split inbound/outbound processing
+///
+/// Features:
+/// - Concurrent message processing with separate inbound/outbound actors
+/// - Optional connection limits via semaphore
+/// - Configurable channel sizes for backpressure
 pub struct WebSocketHandler<S, I, O, C, F>
 where
     S: Send + Sync + 'static,
@@ -31,6 +37,7 @@ where
     message_converter: Arc<C>,
     state_factory: F,
     channel_size: usize,
+    connection_semaphore: Option<Arc<Semaphore>>,
 }
 
 impl<S, I, O, C, F> Clone for WebSocketHandler<S, I, O, C, F>
@@ -47,6 +54,7 @@ where
             message_converter: self.message_converter.clone(),
             state_factory: self.state_factory.clone(),
             channel_size: self.channel_size,
+            connection_semaphore: self.connection_semaphore.clone(),
         }
     }
 }
@@ -64,12 +72,14 @@ where
         message_converter: C,
         state_factory: F,
         channel_size: usize,
+        max_connections: Option<usize>,
     ) -> Self {
         Self {
             middlewares: Arc::new(middlewares),
             message_converter: Arc::new(message_converter),
             state_factory,
             channel_size,
+            connection_semaphore: max_connections.map(|cap| Arc::new(Semaphore::new(cap))),
         }
     }
 
@@ -85,6 +95,19 @@ where
         W::Stream: Send + 'static,
     {
         let connection_token = cancellation_token.child_token();
+
+        // Try to acquire connection permit if max_connections is set
+        let _permit = if let Some(semaphore) = &self.connection_semaphore {
+            match semaphore.clone().try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    warn!("Maximum connections limit reached, rejecting connection");
+                    return Err(anyhow::anyhow!("Maximum connections limit reached"));
+                }
+            }
+        } else {
+            None
+        };
 
         // Create initial state wrapped in Arc<RwLock<>>
         let initial_state = self.state_factory.create_state(connection_token.clone());
@@ -280,6 +303,7 @@ where
     middlewares: Vec<Arc<dyn Middleware<State = S, IncomingMessage = I, OutgoingMessage = O>>>,
     message_converter: C,
     channel_size: usize,
+    max_connections: Option<usize>,
 }
 
 impl<S, I, O, C, F> WebSocketBuilder<S, I, O, C, F>
@@ -296,6 +320,7 @@ where
             middlewares: Vec::new(),
             message_converter,
             channel_size: 100,
+            max_connections: None,
         }
     }
 
@@ -320,12 +345,28 @@ where
         self
     }
 
+    /// Sets the maximum number of concurrent connections.
+    ///
+    /// When this limit is reached, new connection attempts will be
+    /// rejected with a `MaxConnectionsExceeded` error.
+    ///
+    /// # Arguments
+    /// * `max` - The maximum number of concurrent connections
+    ///
+    /// # Returns
+    /// The builder instance for method chaining
+    pub fn with_max_connections(mut self, max: usize) -> Self {
+        self.max_connections = Some(max);
+        self
+    }
+
     pub fn build(self) -> WebSocketHandler<S, I, O, C, F> {
         WebSocketHandler::new(
             self.middlewares,
             self.message_converter,
             self.state_factory,
             self.channel_size,
+            self.max_connections,
         )
     }
 }
