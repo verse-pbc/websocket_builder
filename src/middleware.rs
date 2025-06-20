@@ -42,7 +42,7 @@ use async_trait::async_trait;
 ///
 ///     async fn process_inbound(
 ///         &self,
-///         ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+///         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
 ///     ) -> Result<()> {
 ///         if let Some(message) = &ctx.message {
 ///             println!("Received message: {}", message);
@@ -80,7 +80,7 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// The default implementation forwards the message to the next middleware.
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
         ctx.next().await
     }
@@ -103,7 +103,7 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// The default implementation forwards the message to the next middleware.
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
         ctx.next().await
     }
@@ -125,7 +125,7 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// The default implementation forwards the connection event to the next middleware.
     async fn on_connect(
         &self,
-        ctx: &mut ConnectionContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
         ctx.next().await
     }
@@ -159,9 +159,9 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// downstream components receive the final state for consistent cleanup.
     ///
     /// The default implementation forwards the disconnect event to the next middleware.
-    async fn on_disconnect<'a>(
-        &'a self,
-        ctx: &mut DisconnectContext<'a, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
         ctx.next().await
     }

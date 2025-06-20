@@ -1,4 +1,4 @@
-//! Tests for ActorWebSocketHandler covering untested paths
+//! Tests for WebSocketHandler covering untested paths
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    ActorWebSocketHandler, ConnectionContext, DisconnectContext, InboundContext, MessageConverter,
-    Middleware, OutboundContext, StateFactory,
+    ConnectionContext, DisconnectContext, InboundContext, MessageConverter, Middleware,
+    OutboundContext, StateFactory, WebSocketHandler,
 };
 
 // Test state with rich functionality
@@ -105,10 +105,12 @@ impl Middleware for ConnectionLifecycleMiddleware {
 
     async fn on_connect(
         &self,
-        ctx: &mut ConnectionContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state.set_connected(true);
+        ctx.state.write().await.set_connected(true);
         ctx.state
+            .read()
+            .await
             .add_message(format!("{}: connected", self.name))
             .await;
 
@@ -119,12 +121,14 @@ impl Middleware for ConnectionLifecycleMiddleware {
         Ok(())
     }
 
-    async fn on_disconnect<'a>(
-        &'a self,
-        ctx: &mut DisconnectContext<'a, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state.set_connected(false);
+        ctx.state.write().await.set_connected(false);
         ctx.state
+            .read()
+            .await
             .add_message(format!("{}: disconnected", self.name))
             .await;
         Ok(())
@@ -132,11 +136,13 @@ impl Middleware for ConnectionLifecycleMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(message) = &ctx.message {
-            let count = ctx.state.increment_counter();
+            let count = ctx.state.write().await.increment_counter();
             ctx.state
+                .read()
+                .await
                 .add_message(format!("{}: inbound {}: {}", self.name, count, message))
                 .await;
 
@@ -152,10 +158,12 @@ impl Middleware for ConnectionLifecycleMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(message) = &ctx.message {
             ctx.state
+                .read()
+                .await
                 .add_message(format!("{}: outbound: {}", self.name, message))
                 .await;
         }
@@ -203,21 +211,21 @@ impl Middleware for ErrorMiddleware {
 
     async fn on_connect(
         &self,
-        ctx: &mut ConnectionContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_connect {
-            ctx.state.increment_error();
+            ctx.state.write().await.increment_error();
             return Err(anyhow::anyhow!("Error middleware: connect failed"));
         }
         ctx.next().await
     }
 
-    async fn on_disconnect<'a>(
-        &'a self,
-        ctx: &mut DisconnectContext<'a, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_disconnect {
-            ctx.state.increment_error();
+            ctx.state.write().await.increment_error();
             return Err(anyhow::anyhow!("Error middleware: disconnect failed"));
         }
         ctx.next().await
@@ -225,10 +233,10 @@ impl Middleware for ErrorMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_inbound {
-            ctx.state.increment_error();
+            ctx.state.write().await.increment_error();
             return Err(anyhow::anyhow!("Error middleware: inbound failed"));
         }
         ctx.next().await
@@ -236,10 +244,10 @@ impl Middleware for ErrorMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_outbound {
-            ctx.state.increment_error();
+            ctx.state.write().await.increment_error();
             return Err(anyhow::anyhow!("Error middleware: outbound failed"));
         }
         ctx.next().await
@@ -259,7 +267,7 @@ async fn test_actor_handler_creation_and_clone() {
             >,
         >];
 
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         middlewares,
         ComprehensiveConverter,
         ComprehensiveStateFactory,
@@ -297,7 +305,7 @@ async fn test_state_actor_spawn_and_basic_commands() {
 
     // We can't directly test StateActor::spawn as it's private, but we can test
     // the handler creation which uses it internally
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         vec![],
         ComprehensiveConverter,
         ComprehensiveStateFactory,
@@ -327,7 +335,7 @@ async fn test_connection_lifecycle_with_middleware() {
             >,
         >;
 
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         vec![middleware1, middleware2],
         ComprehensiveConverter,
         ComprehensiveStateFactory,
@@ -349,7 +357,7 @@ async fn test_error_handling_in_connect() {
             >,
         >;
 
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         vec![error_middleware],
         ComprehensiveConverter,
         ComprehensiveStateFactory,
@@ -461,7 +469,7 @@ async fn test_cancellation_token_handling() {
 
 #[tokio::test]
 async fn test_channel_size_configuration() {
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         vec![],
         ComprehensiveConverter,
         ComprehensiveStateFactory,
@@ -499,7 +507,7 @@ async fn test_multiple_middleware_chain() {
             >,
         >;
 
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         vec![middleware1, middleware2, middleware3],
         ComprehensiveConverter,
         ComprehensiveStateFactory,
@@ -512,7 +520,7 @@ async fn test_multiple_middleware_chain() {
 
 #[tokio::test]
 async fn test_empty_middleware_chain() {
-    let handler = ActorWebSocketHandler::new(
+    let handler = WebSocketHandler::new(
         vec![], // No middlewares
         ComprehensiveConverter,
         ComprehensiveStateFactory,

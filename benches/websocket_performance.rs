@@ -68,16 +68,19 @@ impl Middleware for HeavyMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
         if let Some(ref msg) = ctx.message {
             // Simulate CPU-intensive work
             let start = Instant::now();
             tokio::time::sleep(self.work_duration).await;
 
-            ctx.state.message_count += 1;
-            ctx.state.processing_time_sum += start.elapsed();
-            ctx.state.last_message_time = Some(Instant::now());
+            {
+                let mut state = ctx.state.write().await;
+                state.message_count += 1;
+                state.processing_time_sum += start.elapsed();
+                state.last_message_time = Some(Instant::now());
+            }
 
             // Try to send response message
             let response = MockMessage {
@@ -114,9 +117,9 @@ impl Middleware for LightMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
-        ctx.state.message_count += 1;
+        ctx.state.write().await.message_count += 1;
         self.processed_count.fetch_add(1, Ordering::Relaxed);
         ctx.next().await
     }
@@ -137,7 +140,6 @@ impl Middleware for LatencyMeasureMiddleware {
     async fn process_outbound(
         &self,
         ctx: &mut websocket_builder::OutboundContext<
-            '_,
             Self::State,
             Self::IncomingMessage,
             Self::OutgoingMessage,

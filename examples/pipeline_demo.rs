@@ -9,8 +9,8 @@ use axum::{
 use std::{net::SocketAddr, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, MessageConverter, Middleware, OutboundContext, SendMessage, StateFactory,
-    WebSocketBuilder, WebSocketHandler,
+    AxumWebSocketExt, InboundContext, MessageConverter, Middleware, OutboundContext, SendMessage,
+    StateFactory, WebSocketBuilder, WebSocketHandler,
 };
 
 // 1. Minimal State (not actively used in transformation for this example)
@@ -54,7 +54,7 @@ impl Middleware for TrimMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = ctx.message.take() {
             ctx.message = Some(msg.trim().to_string());
@@ -64,7 +64,7 @@ impl Middleware for TrimMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         // Just pass the message through, no prefix added.
         // If ctx.message is None, it means a previous middleware consumed it or didn't set one,
@@ -86,7 +86,7 @@ impl Middleware for HelloEchoMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         let processed_message = if let Some(name) = ctx.message.take() {
             // Name is already trimmed by TrimMiddleware
@@ -116,7 +116,7 @@ impl Middleware for HelloEchoMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = ctx.message.take() {
             ctx.message = Some(format!("{} 👋", msg));
@@ -148,7 +148,10 @@ async fn ws_axum_handler(
     let conn_token = CancellationToken::new();
     ws.on_upgrade(move |socket| async move {
         println!("Client {} connected.", addr);
-        if let Err(e) = handler.start(socket, addr.to_string(), conn_token).await {
+        if let Err(e) = handler
+            .start_axum(socket, addr.to_string(), conn_token)
+            .await
+        {
             eprintln!("Handler error for {}: {:?}", addr, e);
         }
         println!("Client {} disconnected.", addr);

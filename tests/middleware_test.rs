@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use websocket_builder::{
     ConnectionContext, DisconnectContext, InboundContext, Middleware, OutboundContext,
 };
@@ -109,10 +109,12 @@ impl Middleware for CustomMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        let count = ctx.state.increment_inbound_calls();
+        let count = ctx.state.write().await.increment_inbound_calls();
         ctx.state
+            .read()
+            .await
             .add_message(format!("{}: inbound #{}", self._name, count))
             .await;
 
@@ -125,10 +127,12 @@ impl Middleware for CustomMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        let count = ctx.state.increment_outbound_calls();
+        let count = ctx.state.write().await.increment_outbound_calls();
         ctx.state
+            .read()
+            .await
             .add_message(format!("{}: outbound #{}", self._name, count))
             .await;
 
@@ -141,10 +145,12 @@ impl Middleware for CustomMiddleware {
 
     async fn on_connect(
         &self,
-        ctx: &mut ConnectionContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        let count = ctx.state.increment_connect_calls();
+        let count = ctx.state.write().await.increment_connect_calls();
         ctx.state
+            .read()
+            .await
             .add_message(format!("{}: connect #{}", self._name, count))
             .await;
 
@@ -156,12 +162,14 @@ impl Middleware for CustomMiddleware {
         ctx.next().await
     }
 
-    async fn on_disconnect<'a>(
-        &'a self,
-        ctx: &mut DisconnectContext<'a, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        let count = ctx.state.increment_disconnect_calls();
+        let count = ctx.state.write().await.increment_disconnect_calls();
         ctx.state
+            .read()
+            .await
             .add_message(format!("{}: disconnect #{}", self._name, count))
             .await;
         ctx.next().await
@@ -192,7 +200,7 @@ impl Middleware for ErrorMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on == "inbound" {
             return Err(anyhow::anyhow!("{}: Simulated inbound error", self.name));
@@ -202,7 +210,7 @@ impl Middleware for ErrorMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on == "outbound" {
             return Err(anyhow::anyhow!("{}: Simulated outbound error", self.name));
@@ -212,7 +220,7 @@ impl Middleware for ErrorMiddleware {
 
     async fn on_connect(
         &self,
-        ctx: &mut ConnectionContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on == "connect" {
             return Err(anyhow::anyhow!("{}: Simulated connect error", self.name));
@@ -220,9 +228,9 @@ impl Middleware for ErrorMiddleware {
         ctx.next().await
     }
 
-    async fn on_disconnect<'a>(
-        &'a self,
-        ctx: &mut DisconnectContext<'a, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on == "disconnect" {
             return Err(anyhow::anyhow!("{}: Simulated disconnect error", self.name));
@@ -255,7 +263,7 @@ impl Middleware for TransformMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(message) = &ctx.message {
             ctx.message = Some(format!("{}{}{}", self.prefix, message, self.suffix));
@@ -265,7 +273,7 @@ impl Middleware for TransformMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(message) = &ctx.message {
             ctx.message = Some(format!("OUT{}{}{}", self.prefix, message, self.suffix));
@@ -276,13 +284,12 @@ impl Middleware for TransformMiddleware {
 
 // Helper to create mock contexts
 type MockSenderReceiver = (
-    tokio::sync::mpsc::Sender<(String, usize)>,
-    tokio::sync::mpsc::Receiver<(String, usize)>,
+    flume::Sender<(String, usize)>,
+    flume::Receiver<(String, usize)>,
 );
 
 fn create_mock_sender() -> MockSenderReceiver {
-    let (tx, rx) = mpsc::channel(10);
-    (tx, rx)
+    flume::bounded(10)
 }
 
 fn create_middlewares() -> Vec<
@@ -313,17 +320,19 @@ fn create_single_middleware() -> Vec<
 #[tokio::test]
 async fn test_default_middleware_implementations() {
     let middleware = DefaultMiddleware::new("default");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
     let (sender, _rx) = create_mock_sender();
 
     // Test default process_inbound
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = InboundContext::new(
         "test_conn".to_string(),
         Some("test_message".to_string()),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -335,8 +344,8 @@ async fn test_default_middleware_implementations() {
         "test_conn".to_string(),
         "test_outbound".to_string(),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -347,8 +356,8 @@ async fn test_default_middleware_implementations() {
     let mut ctx = ConnectionContext::new(
         "test_conn".to_string(),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -359,8 +368,8 @@ async fn test_default_middleware_implementations() {
     let mut ctx = DisconnectContext::new(
         "test_conn".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -371,46 +380,54 @@ async fn test_default_middleware_implementations() {
 #[tokio::test]
 async fn test_custom_middleware_implementations() {
     let middleware = CustomMiddleware::new("custom");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
     let (sender, _rx) = create_mock_sender();
 
     // Test custom process_inbound
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = InboundContext::new(
         "test_conn".to_string(),
         Some("hello".to_string()),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
     let result = middleware.process_inbound(&mut ctx).await;
     assert!(result.is_ok());
     assert_eq!(ctx.message, Some("custom(hello)".to_string()));
-    assert_eq!(state.inbound_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ctx.state.read().await.inbound_calls.load(Ordering::SeqCst),
+        1
+    );
 
     // Test custom process_outbound
     let mut ctx = OutboundContext::new(
         "test_conn".to_string(),
         "goodbye".to_string(),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
     let result = middleware.process_outbound(&mut ctx).await;
     assert!(result.is_ok());
     assert_eq!(ctx.message, Some("Outcustom(goodbye)".to_string()));
-    assert_eq!(state.outbound_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ctx.state.read().await.outbound_calls.load(Ordering::SeqCst),
+        1
+    );
 
     // Test custom on_connect
     let mut ctx = ConnectionContext::new(
         "test_conn".to_string(),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -419,23 +436,33 @@ async fn test_custom_middleware_implementations() {
         println!("on_connect error: {}", e);
     }
     assert!(result.is_ok());
-    assert_eq!(state.connect_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ctx.state.read().await.connect_calls.load(Ordering::SeqCst),
+        1
+    );
 
     // Test custom on_disconnect
     let mut ctx = DisconnectContext::new(
         "test_conn".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
     let result = middleware.on_disconnect(&mut ctx).await;
     assert!(result.is_ok());
-    assert_eq!(state.disconnect_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ctx.state
+            .read()
+            .await
+            .disconnect_calls
+            .load(Ordering::SeqCst),
+        1
+    );
 
     // Verify messages were logged
-    let messages = state.get_messages().await;
+    let messages = ctx.state.read().await.get_messages().await;
     assert!(messages.contains(&"custom: inbound #1".to_string()));
     assert!(messages.contains(&"custom: outbound #1".to_string()));
     assert!(messages.contains(&"custom: connect #1".to_string()));
@@ -445,16 +472,18 @@ async fn test_custom_middleware_implementations() {
 #[tokio::test]
 async fn test_error_middleware_inbound_error() {
     let middleware = ErrorMiddleware::new("error_test", "inbound");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_middlewares();
     let (sender, _rx) = create_mock_sender();
 
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = InboundContext::new(
         "test_conn".to_string(),
         Some("test".to_string()),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 
@@ -469,16 +498,18 @@ async fn test_error_middleware_inbound_error() {
 #[tokio::test]
 async fn test_error_middleware_outbound_error() {
     let middleware = ErrorMiddleware::new("error_test", "outbound");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_middlewares();
     let (sender, _rx) = create_mock_sender();
 
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = OutboundContext::new(
         "test_conn".to_string(),
         "test".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 
@@ -493,15 +524,17 @@ async fn test_error_middleware_outbound_error() {
 #[tokio::test]
 async fn test_error_middleware_connect_error() {
     let middleware = ErrorMiddleware::new("error_test", "connect");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_middlewares();
     let (sender, _rx) = create_mock_sender();
 
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = ConnectionContext::new(
         "test_conn".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 
@@ -516,15 +549,17 @@ async fn test_error_middleware_connect_error() {
 #[tokio::test]
 async fn test_error_middleware_disconnect_error() {
     let middleware = ErrorMiddleware::new("error_test", "disconnect");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_middlewares();
     let (sender, _rx) = create_mock_sender();
 
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = DisconnectContext::new(
         "test_conn".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 
@@ -539,17 +574,19 @@ async fn test_error_middleware_disconnect_error() {
 #[tokio::test]
 async fn test_transform_middleware_message_transformation() {
     let middleware = TransformMiddleware::new("[", "]");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
     let (sender, _rx) = create_mock_sender();
 
     // Test inbound transformation
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = InboundContext::new(
         "test_conn".to_string(),
         Some("hello".to_string()),
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -562,8 +599,8 @@ async fn test_transform_middleware_message_transformation() {
         "test_conn".to_string(),
         "world".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 
@@ -575,17 +612,19 @@ async fn test_transform_middleware_message_transformation() {
 #[tokio::test]
 async fn test_middleware_with_none_message() {
     let middleware = CustomMiddleware::new("none_test");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
     let (sender, _rx) = create_mock_sender();
 
     // Test inbound with None message
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = InboundContext::new(
         "test_conn".to_string(),
         None,
         Some(sender.clone()),
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc.clone(),
         0,
     );
 
@@ -598,8 +637,8 @@ async fn test_middleware_with_none_message() {
         "test_conn".to_string(),
         "test".to_string(),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 
@@ -611,24 +650,29 @@ async fn test_middleware_with_none_message() {
 #[tokio::test]
 async fn test_middleware_without_sender() {
     let middleware = CustomMiddleware::new("no_sender");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
 
     // Test on_connect without sender
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = ConnectionContext::new(
         "test_conn".to_string(),
         None, // No sender
-        &mut state,
-        &middlewares,
+        state_arc.clone(),
+        middlewares_arc,
         0,
     );
 
     let result = middleware.on_connect(&mut ctx).await;
     assert!(result.is_ok());
-    assert_eq!(state.connect_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ctx.state.read().await.connect_calls.load(Ordering::SeqCst),
+        1
+    );
 
     // Verify message was still logged even without sender
-    let messages = state.get_messages().await;
+    let messages = ctx.state.read().await.get_messages().await;
     assert!(messages.contains(&"no_sender: connect #1".to_string()));
 }
 
@@ -659,7 +703,7 @@ async fn test_middleware_trait_bounds() {
 #[tokio::test]
 async fn test_middleware_state_mutations() {
     let middleware = CustomMiddleware::new("state_test");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
     let (sender, _rx) = create_mock_sender();
 
@@ -667,13 +711,15 @@ async fn test_middleware_state_mutations() {
     assert_eq!(state.get_counter(), 0);
 
     // Process multiple messages to verify state mutations
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     for i in 1..=5 {
         let mut ctx = InboundContext::new(
             "test_conn".to_string(),
             Some(format!("msg{}", i)),
             Some(sender.clone()),
-            &mut state,
-            &middlewares,
+            state_arc.clone(),
+            middlewares_arc.clone(),
             0,
         );
 
@@ -682,9 +728,12 @@ async fn test_middleware_state_mutations() {
     }
 
     // Verify state was mutated
-    assert_eq!(state.inbound_calls.load(Ordering::SeqCst), 5);
+    assert_eq!(
+        state_arc.read().await.inbound_calls.load(Ordering::SeqCst),
+        5
+    );
 
-    let messages = state.get_messages().await;
+    let messages = state_arc.read().await.get_messages().await;
     assert_eq!(messages.len(), 5);
     assert!(messages.contains(&"state_test: inbound #1".to_string()));
     assert!(messages.contains(&"state_test: inbound #5".to_string()));
@@ -728,17 +777,19 @@ async fn test_middleware_clone_implementations() {
 #[tokio::test]
 async fn test_middleware_with_empty_string_messages() {
     let middleware = TransformMiddleware::new("", "");
-    let mut state = MiddlewareTestState::default();
+    let state = MiddlewareTestState::default();
     let middlewares = create_single_middleware();
     let (sender, _rx) = create_mock_sender();
 
     // Test with empty string message
+    let state_arc = Arc::new(tokio::sync::RwLock::new(state));
+    let middlewares_arc = Arc::new(middlewares);
     let mut ctx = InboundContext::new(
         "test_conn".to_string(),
         Some("".to_string()),
         Some(sender),
-        &mut state,
-        &middlewares,
+        state_arc,
+        middlewares_arc,
         0,
     );
 

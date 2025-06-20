@@ -1,4 +1,4 @@
-//! Tests for the actor-based WebSocket handler
+//! Tests for the WebSocket handler
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    ActorWebSocketBuilder, ConnectionContext, DisconnectContext, InboundContext, MessageConverter,
-    Middleware, OutboundContext, SendMessage, StateFactory,
+    ConnectionContext, DisconnectContext, InboundContext, MessageConverter, Middleware,
+    OutboundContext, SendMessage, StateFactory, WebSocketBuilder,
 };
 
 // Simple test state
@@ -70,41 +70,57 @@ impl Middleware for CounterMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &ctx.message {
-            ctx.state.add_message(format!("Inbound: {}", msg)).await;
-            ctx.state.increment();
+            ctx.state
+                .read()
+                .await
+                .add_message(format!("Inbound: {}", msg))
+                .await;
+            ctx.state.write().await.increment();
         }
         ctx.next().await
     }
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &ctx.message {
-            ctx.state.add_message(format!("Outbound: {}", msg)).await;
+            ctx.state
+                .read()
+                .await
+                .add_message(format!("Outbound: {}", msg))
+                .await;
         }
         ctx.next().await
     }
 
     async fn on_connect(
         &self,
-        ctx: &mut ConnectionContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state.add_message("Connected".to_string()).await;
+        ctx.state
+            .read()
+            .await
+            .add_message("Connected".to_string())
+            .await;
         if let Some(sender) = &mut ctx.sender {
             sender.send("Welcome".to_string())?;
         }
         Ok(())
     }
 
-    async fn on_disconnect<'a>(
-        &'a self,
-        ctx: &mut DisconnectContext<'a, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state.add_message("Disconnected".to_string()).await;
+        ctx.state
+            .read()
+            .await
+            .add_message("Disconnected".to_string())
+            .await;
         Ok(())
     }
 }
@@ -121,7 +137,7 @@ impl Middleware for EchoMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &ctx.message {
             ctx.send_message(format!("Echo: {}", msg))?;
@@ -131,7 +147,7 @@ impl Middleware for EchoMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         ctx.next().await
     }
@@ -139,7 +155,7 @@ impl Middleware for EchoMiddleware {
 
 #[tokio::test]
 async fn test_actor_handler_creation() {
-    let _handler = ActorWebSocketBuilder::new(TestStateFactory, TestConverter)
+    let _handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
         .with_middleware(CounterMiddleware)
         .build();
 
@@ -149,7 +165,7 @@ async fn test_actor_handler_creation() {
 
 #[tokio::test]
 async fn test_builder_with_multiple_middlewares() {
-    let _handler = ActorWebSocketBuilder::new(TestStateFactory, TestConverter)
+    let _handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
         .with_middleware(CounterMiddleware)
         .with_middleware(EchoMiddleware)
         .with_channel_size(50)
@@ -212,11 +228,13 @@ impl Middleware for PrefixMiddleware {
 
     async fn process_inbound(
         &self,
-        ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &mut ctx.message {
             *msg = format!("{}:{}", self.0, msg);
             ctx.state
+                .read()
+                .await
                 .add_message(format!("Processed by {}", self.0))
                 .await;
         }
@@ -225,7 +243,7 @@ impl Middleware for PrefixMiddleware {
 
     async fn process_outbound(
         &self,
-        ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &mut ctx.message {
             *msg = format!("{}:{}", self.0, msg);
@@ -237,7 +255,7 @@ impl Middleware for PrefixMiddleware {
 #[tokio::test]
 async fn test_middleware_ordering() {
     // Create handler with multiple prefix middlewares
-    let _handler = ActorWebSocketBuilder::new(TestStateFactory, TestConverter)
+    let _handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
         .with_middleware(PrefixMiddleware("First"))
         .with_middleware(PrefixMiddleware("Second"))
         .with_middleware(PrefixMiddleware("Third"))

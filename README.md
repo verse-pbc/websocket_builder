@@ -4,11 +4,11 @@ A low-level middleware-based WebSocket framework for building protocol-aware ser
 
 ## Core Features
 
-- Bidirectional middleware pipeline for message processing
-- Type-safe message conversion between wire format and application types
+- Concurrent split-actor architecture for inbound and outbound processing
+- Bidirectional middleware pipeline with type-safe message handling
+- Fire-and-forget message processing with configurable backpressure
 - Per-connection state management with automatic cleanup
-- Built-in cancellation support via `CancellationToken`
-- Configurable channel size with backpressure handling
+- Framework-agnostic design via WebSocket trait abstraction
 
 ## Installation
 

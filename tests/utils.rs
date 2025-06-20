@@ -12,6 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
+use websocket_builder::AxumWebSocketExt;
 #[cfg(test)]
 use websocket_builder::{MessageConverter, StateFactory, WebSocketHandler};
 
@@ -92,7 +93,7 @@ where
                         ws.on_upgrade(move |socket| async move {
                             let _ = state
                                 .ws_handler
-                                .start(socket, addr.clone(), state.shutdown.clone())
+                                .start_axum(socket, addr.clone(), state.shutdown.clone())
                                 .await;
                         })
                     }
