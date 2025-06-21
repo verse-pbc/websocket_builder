@@ -59,7 +59,7 @@ where
         );
 
         tokio::spawn(async move {
-            info!("InboundActor starting for connection {}", connection_id);
+            debug!("InboundActor starting for connection {}", connection_id);
             actor.run().await;
             info!("InboundActor stopped for connection {}", connection_id);
         });
@@ -160,7 +160,7 @@ where
         );
 
         tokio::spawn(async move {
-            info!("OutboundActor starting for connection {}", connection_id);
+            debug!("OutboundActor starting for connection {}", connection_id);
             actor.run().await;
             info!("OutboundActor stopped for connection {}", connection_id);
         });
