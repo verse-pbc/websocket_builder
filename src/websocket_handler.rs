@@ -259,7 +259,7 @@ where
                                 break;
                             }
                             Some(Err(e)) => {
-                                error!("WebSocket error: {}", e);
+                                debug!("WebSocket error: {}", e);
                                 break;
                             }
                             None => {
