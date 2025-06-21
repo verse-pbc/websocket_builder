@@ -1,5 +1,9 @@
 # WebSocket Builder
 
+[![Crates.io](https://img.shields.io/crates/v/websocket_builder.svg)](https://crates.io/crates/websocket_builder)
+[![Documentation](https://docs.rs/websocket_builder/badge.svg)](https://docs.rs/websocket_builder)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A low-level middleware-based WebSocket framework for building protocol-aware servers in Rust. This crate provides the foundation for protocol implementations like `nostr_relay_builder`. Designed for building stateful connection pipelines with type-safe message processing.
 
 ## Core Features
@@ -16,7 +20,7 @@ Add this to your `Cargo.toml`. Use current stable versions for dependencies.
 
 ```toml
 [dependencies]
-websocket_builder = "0.1.0" # Or your specific version/path
+websocket_builder = "0.1.0-alpha.1"
 tokio = { version = "1.x", features = ["full"] }
 axum = { version = "0.7.x", features = ["ws"] }
 async-trait = "0.1.x"
