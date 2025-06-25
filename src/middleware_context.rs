@@ -478,45 +478,45 @@ pub type SharedMiddlewareVec<S, I, O> =
 /// cleanup and error recovery.
 ///
 /// # Type Parameters
-/// * `TapState` - The type of state maintained for each connection
+/// * `ConnectionState` - The type of state maintained for each connection
 #[derive(Error, Debug)]
-pub enum WebsocketError<TapState: Send + Sync + 'static> {
+pub enum WebsocketError<ConnectionState: Send + Sync + 'static> {
     #[error("IO error: {0}")]
-    IoError(std::io::Error, TapState),
+    IoError(std::io::Error, ConnectionState),
 
     #[error("Invalid target URL: missing host")]
-    InvalidTargetUrl(TapState),
+    InvalidTargetUrl(ConnectionState),
 
     #[error("Inbound message conversion error: {0}")]
-    InboundMessageConversionError(anyhow::Error, TapState),
+    InboundMessageConversionError(anyhow::Error, ConnectionState),
 
     #[error("Outbound message conversion error: {0}")]
-    OutboundMessageConversionError(anyhow::Error, TapState),
+    OutboundMessageConversionError(anyhow::Error, ConnectionState),
 
     #[error("Handler error: {0}")]
-    HandlerError(anyhow::Error, TapState),
+    HandlerError(anyhow::Error, ConnectionState),
 
     #[error("Missing middleware")]
-    MissingMiddleware(TapState),
+    MissingMiddleware(ConnectionState),
 
     #[error("Maximum connections exceeded")]
-    MaxConnectionsExceeded(TapState),
+    MaxConnectionsExceeded(ConnectionState),
 
     #[error("Task join error: {0}")]
-    JoinError(tokio::task::JoinError, TapState),
+    JoinError(tokio::task::JoinError, ConnectionState),
 
     #[error("WebSocket error: {0}")]
-    WebsocketError(anyhow::Error, TapState),
+    WebsocketError(anyhow::Error, ConnectionState),
 
     #[error("No closing handshake")]
-    NoClosingHandshake(anyhow::Error, TapState),
+    NoClosingHandshake(anyhow::Error, ConnectionState),
 
     #[error("Binary messages are not supported by this server")]
-    UnsupportedBinaryMessage(TapState),
+    UnsupportedBinaryMessage(ConnectionState),
 }
 
-impl<TapState: Send + Sync + 'static> WebsocketError<TapState> {
-    pub fn get_state(self) -> TapState {
+impl<ConnectionState: Send + Sync + 'static> WebsocketError<ConnectionState> {
+    pub fn get_state(self) -> ConnectionState {
         match self {
             Self::HandlerError(_, state) => state,
             Self::IoError(_, state) => state,
