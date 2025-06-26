@@ -1,7 +1,9 @@
 use anyhow::Result;
 use flume::{Receiver, Sender};
+use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::{select, sync::RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
@@ -121,7 +123,7 @@ where
     O: Send + Sync + 'static,
 {
     /// Creates a new OutboundActor
-    pub fn new(
+    fn new(
         state: Arc<RwLock<S>>,
         middlewares: SharedMiddlewareVec<S, M, O>,
         receiver: Receiver<(O, usize)>,
@@ -147,6 +149,7 @@ where
         channel_size: usize,
         websocket_sender: Sender<String>,
         message_converter: Arc<dyn crate::MessageConverter<M, O>>,
+        cancellation_token: CancellationToken,
     ) -> Sender<(O, usize)> {
         let (tx, rx) = flume::bounded::<(O, usize)>(channel_size);
 
@@ -161,21 +164,22 @@ where
 
         tokio::spawn(async move {
             debug!("OutboundActor starting for connection {}", connection_id);
-            actor.run().await;
-            info!("OutboundActor stopped for connection {}", connection_id);
+            loop {
+                select! {
+                    Ok((message, middleware_index)) = actor.receiver.recv_async() => {
+                        if let Err(e) = actor.process_outbound(message, middleware_index).await {
+                            error!("Error processing outbound message: {}", e);
+                        }
+                    }
+                    _ = cancellation_token.cancelled() => {
+                        break;
+                    }
+                }
+            }
+            debug!("OutboundActor receiver closed, shutting down");
         });
 
         tx
-    }
-
-    /// Main run loop for the actor
-    async fn run(&mut self) {
-        while let Ok((message, middleware_index)) = self.receiver.recv_async().await {
-            if let Err(e) = self.process_outbound(message, middleware_index).await {
-                error!("Error processing outbound message: {}", e);
-            }
-        }
-        debug!("OutboundActor receiver closed, shutting down");
     }
 
     /// Process a single outbound message through the middleware chain
@@ -215,9 +219,12 @@ where
 
 /// Helper struct to manage the lifecycle of both actors
 pub struct SplitActors<M, O> {
-    pub inbound_sender: Sender<(String, M)>,
-    pub outbound_sender: Sender<(O, usize)>,
+    _m: PhantomData<M>,
+    _o: PhantomData<O>,
 }
+
+/// Type alias for the actor senders
+type ActorSenders<M, O> = (Sender<(String, M)>, Sender<(O, usize)>);
 
 impl<M, O> SplitActors<M, O>
 where
@@ -232,7 +239,8 @@ where
         channel_size: usize,
         websocket_sender: Sender<String>,
         message_converter: Arc<dyn crate::MessageConverter<M, O>>,
-    ) -> Self
+        cancellation_token: CancellationToken,
+    ) -> ActorSenders<M, O>
     where
         S: Send + Sync + 'static,
     {
@@ -244,6 +252,7 @@ where
             channel_size,
             websocket_sender.clone(),
             message_converter,
+            cancellation_token,
         );
 
         // Create inbound actor
@@ -255,10 +264,7 @@ where
             channel_size,
         );
 
-        Self {
-            inbound_sender,
-            outbound_sender,
-        }
+        (inbound_sender, outbound_sender)
     }
 }
 
@@ -296,7 +302,7 @@ pub async fn process_on_disconnect<S, M, O>(
     state: Arc<RwLock<S>>,
     middlewares: &SharedMiddlewareVec<S, M, O>,
     connection_id: &str,
-    outbound_sender: &Sender<(O, usize)>,
+    outbound_sender: Sender<(O, usize)>,
 ) -> Result<()>
 where
     S: Send + Sync + 'static,

@@ -126,7 +126,7 @@ where
                     _ = tokio::time::sleep(max_time) => {
                         if !token.is_cancelled() {
                             warn!(
-                                "Max connection time ({:?}) exceeded, initiating graceful shutdown",
+                                "Max connection time ({:?}) exceeded, disconnecting",
                                 max_time
                             );
                             token.cancel();
@@ -141,13 +141,14 @@ where
         let (websocket_tx, websocket_rx) = flume::bounded::<String>(self.channel_size);
 
         // Spawn split actors
-        let actors = SplitActors::spawn(
+        let (inbound_sender, outbound_sender) = SplitActors::spawn(
             shared_state.clone(),
             self.middlewares.clone(),
             connection_id.clone(),
             self.channel_size,
             websocket_tx,
             self.message_converter.clone() as Arc<dyn MessageConverter<I, O>>,
+            connection_token.clone(),
         );
 
         // Process on_connect event
@@ -155,7 +156,7 @@ where
             shared_state.clone(),
             &self.middlewares,
             &connection_id,
-            &actors.outbound_sender,
+            &outbound_sender,
         )
         .await?;
 
@@ -166,7 +167,7 @@ where
         let reader_handle = self.spawn_reader(
             connection_id.clone(),
             ws_stream,
-            actors.inbound_sender.clone(),
+            inbound_sender,
             connection_token.clone(),
         );
 
@@ -196,13 +197,12 @@ where
             shared_state.clone(),
             &self.middlewares,
             &connection_id,
-            &actors.outbound_sender,
+            outbound_sender,
         )
         .await
         .ok(); // Ignore errors during disconnect
 
         // Actors will shut down when their channels are dropped
-
         Ok(())
     }
 
