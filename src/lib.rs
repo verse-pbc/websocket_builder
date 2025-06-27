@@ -14,23 +14,65 @@
 //! ## Quick Example
 //!
 //! ```rust,no_run
-//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, OutboundContext};
+//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, StateFactory, MessageConverter, SendMessage};
 //! use async_trait::async_trait;
+//! use anyhow::Result;
+//! use std::sync::Arc;
+//! use tokio_util::sync::CancellationToken;
 //!
+//! // Define a simple state type
+//! #[derive(Debug, Clone, Default)]
+//! struct MyState;
+//!
+//! // State factory to create state instances
+//! #[derive(Clone)]
+//! struct MyStateFactory;
+//!
+//! impl StateFactory<Arc<MyState>> for MyStateFactory {
+//!     fn create_state(&self, _token: CancellationToken) -> Arc<MyState> {
+//!         Arc::new(MyState::default())
+//!     }
+//! }
+//!
+//! // Message converter for string messages
+//! #[derive(Clone, Debug)]
+//! struct StringConverter;
+//!
+//! impl MessageConverter<String, String> for StringConverter {
+//!     fn inbound_from_string(&self, payload: String) -> Result<Option<String>> {
+//!         Ok(Some(payload))
+//!     }
+//!     fn outbound_to_string(&self, payload: String) -> Result<String> {
+//!         Ok(payload)
+//!     }
+//! }
+//!
+//! // Echo middleware that sends messages back
+//! #[derive(Debug)]
 //! struct EchoMiddleware;
 //!
 //! #[async_trait]
 //! impl Middleware for EchoMiddleware {
-//!     async fn handle_message(&self, ctx: &InboundContext) -> Result<(), websocket_builder::WebsocketError> {
+//!     type State = Arc<MyState>;
+//!     type IncomingMessage = String;
+//!     type OutgoingMessage = String;
+//!
+//!     async fn process_inbound(
+//!         &self,
+//!         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+//!     ) -> Result<()> {
 //!         // Echo the message back
-//!         ctx.send_message(ctx.message().clone()).await
+//!         if let Some(message) = &ctx.message {
+//!             ctx.send_message(message.clone())?;
+//!         }
+//!         ctx.next().await
 //!     }
 //! }
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut builder = WebSocketBuilder::new();
-//!     builder.add_middleware(EchoMiddleware);
+//!     let builder = WebSocketBuilder::new(MyStateFactory, StringConverter)
+//!         .with_middleware(EchoMiddleware);
 //!     
 //!     // Use with Axum or other web frameworks
 //!     let handler = builder.build();
