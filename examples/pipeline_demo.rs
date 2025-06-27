@@ -99,14 +99,14 @@ impl Middleware for HelloEchoMiddleware {
                     Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
                 }
             };
-            format!("Hello {}", capitalized_name)
+            format!("Hello {capitalized_name}")
         } else {
             return ctx.next().await; // Should not happen if previous middleware sets message
         };
 
         // Echo the fully inbound-processed message. This will go through the outbound pipeline.
         if let Err(e) = ctx.send_message(processed_message.clone()) {
-            eprintln!("HelloEchoMiddleware: Failed to send echo: {:?}", e);
+            eprintln!("HelloEchoMiddleware: Failed to send echo: {e:?}");
         }
 
         // Set the current inbound message for any potential subsequent *inbound* middleware (none in this example)
@@ -119,7 +119,7 @@ impl Middleware for HelloEchoMiddleware {
         ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = ctx.message.take() {
-            ctx.message = Some(format!("{} 👋", msg));
+            ctx.message = Some(format!("{msg} 👋"));
         }
         ctx.next().await
     }
@@ -147,14 +147,14 @@ async fn ws_axum_handler(
 ) -> impl IntoResponse {
     let conn_token = CancellationToken::new();
     ws.on_upgrade(move |socket| async move {
-        println!("Client {} connected.", addr);
+        println!("Client {addr} connected.");
         if let Err(e) = handler
             .start_axum(socket, addr.to_string(), conn_token)
             .await
         {
-            eprintln!("Handler error for {}: {:?}", addr, e);
+            eprintln!("Handler error for {addr}: {e:?}");
         }
-        println!("Client {} disconnected.", addr);
+        println!("Client {addr} disconnected.");
     })
 }
 
@@ -166,7 +166,7 @@ async fn main() {
         .with_state(pipeline_handler);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("Listening on ws://{}", addr);
+    println!("Listening on ws://{addr}");
     println!("Run: websocat ws://127.0.0.1:3000/ws  # Then send: '  daniel  '  (expect: Hello Daniel 👋)");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

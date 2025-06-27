@@ -76,7 +76,7 @@ impl Middleware for CounterMiddleware {
             ctx.state
                 .read()
                 .await
-                .add_message(format!("Inbound: {}", msg))
+                .add_message(format!("Inbound: {msg}"))
                 .await;
             ctx.state.write().await.increment();
         }
@@ -91,7 +91,7 @@ impl Middleware for CounterMiddleware {
             ctx.state
                 .read()
                 .await
-                .add_message(format!("Outbound: {}", msg))
+                .add_message(format!("Outbound: {msg}"))
                 .await;
         }
         ctx.next().await
@@ -140,7 +140,7 @@ impl Middleware for EchoMiddleware {
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &ctx.message {
-            ctx.send_message(format!("Echo: {}", msg))?;
+            ctx.send_message(format!("Echo: {msg}"))?;
         }
         ctx.next().await
     }

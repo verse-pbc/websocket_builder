@@ -433,7 +433,7 @@ async fn test_custom_middleware_implementations() {
 
     let result = middleware.on_connect(&mut ctx).await;
     if let Err(e) = &result {
-        println!("on_connect error: {}", e);
+        println!("on_connect error: {e}");
     }
     assert!(result.is_ok());
     assert_eq!(
@@ -716,7 +716,7 @@ async fn test_middleware_state_mutations() {
     for i in 1..=5 {
         let mut ctx = InboundContext::new(
             "test_conn".to_string(),
-            Some(format!("msg{}", i)),
+            Some(format!("msg{i}")),
             Some(sender.clone()),
             state_arc.clone(),
             middlewares_arc.clone(),
@@ -747,16 +747,16 @@ async fn test_middleware_debug_implementations() {
     let transform_mw = TransformMiddleware::new("pre", "post");
 
     // Test that Debug is implemented (should not panic)
-    let debug_str = format!("{:?}", default_mw);
+    let debug_str = format!("{default_mw:?}");
     assert!(debug_str.contains("DefaultMiddleware"));
 
-    let debug_str = format!("{:?}", custom_mw);
+    let debug_str = format!("{custom_mw:?}");
     assert!(debug_str.contains("CustomMiddleware"));
 
-    let debug_str = format!("{:?}", error_mw);
+    let debug_str = format!("{error_mw:?}");
     assert!(debug_str.contains("ErrorMiddleware"));
 
-    let debug_str = format!("{:?}", transform_mw);
+    let debug_str = format!("{transform_mw:?}");
     assert!(debug_str.contains("TransformMiddleware"));
 }
 
