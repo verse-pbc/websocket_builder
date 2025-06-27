@@ -90,16 +90,18 @@ impl Middleware for HelloEchoMiddleware {
     ) -> Result<()> {
         let processed_message = if let Some(name) = ctx.message.take() {
             // Name is already trimmed by TrimMiddleware
-            let capitalized_name = if name.is_empty() {
-                String::new()
+            if name.is_empty() {
+                "Hello ".to_string()
             } else {
                 let mut chars = name.chars();
                 match chars.next() {
-                    None => String::new(), // Should not happen if !name.is_empty()
-                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => "Hello ".to_string(), // Should not happen if !name.is_empty()
+                    Some(f) => format!(
+                        "Hello {}",
+                        f.to_uppercase().collect::<String>() + chars.as_str()
+                    ),
                 }
-            };
-            format!("Hello {capitalized_name}")
+            }
         } else {
             return ctx.next().await; // Should not happen if previous middleware sets message
         };
