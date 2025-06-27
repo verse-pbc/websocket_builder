@@ -5,7 +5,7 @@ use flume::{Sender, TrySendError};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// A trait for converting between wire format (string) messages and application types.
 ///
@@ -131,11 +131,19 @@ impl<O> MessageSender<O> {
         );
 
         if let Err(e) = self.sender.try_send((message, bypass_index)) {
-            error!(
-                "Failed to send bypass message. Current capacity: {:?}. Error: {}",
-                self.capacity(),
-                e
-            );
+            match &e {
+                TrySendError::Full(_) => {
+                    warn!(
+                        "Channel full when sending bypass message. Current capacity: {:?}. Consider increasing channel size or implementing backpressure.",
+                        self.capacity()
+                    );
+                }
+                TrySendError::Disconnected(_) => {
+                    debug!(
+                        "Channel closed when sending bypass message. This is expected during connection shutdown."
+                    );
+                }
+            }
             return Err(e);
         }
 
