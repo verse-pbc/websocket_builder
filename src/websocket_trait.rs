@@ -29,7 +29,7 @@ pub enum WsError {
 
 /// Trait for WebSocket sink (sending messages)
 #[async_trait]
-pub trait WsSink: Send {
+pub trait WsSink: Send + Unpin {
     async fn send(&mut self, msg: WsMessage) -> Result<(), WsError>;
 }
 
@@ -38,7 +38,7 @@ pub type WsStreamFuture<'a> =
     Pin<Box<dyn std::future::Future<Output = Option<Result<WsMessage, WsError>>> + Send + 'a>>;
 
 /// Trait for WebSocket stream (receiving messages)
-pub trait WsStream: Send {
+pub trait WsStream: Send + Unpin {
     fn next(&mut self) -> WsStreamFuture<'_>;
 }
 
@@ -128,5 +128,61 @@ impl WsStream for AxumWsStream {
                 None => None,
             }
         })
+    }
+}
+
+// Mock WebSocket implementations for testing
+#[cfg(test)]
+pub mod mock {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    /// Create a mock WebSocket pair for testing
+    /// Returns (sink, stream, sink_rx, stream_tx) where:
+    /// - sink: The mock sink that the actor will write to
+    /// - stream: The mock stream that the actor will read from
+    /// - sink_rx: Receive messages that were sent to the sink
+    /// - stream_tx: Send messages that will be read from the stream
+    pub fn create_mock_websocket() -> (
+        MockWsSink,
+        MockWsStream,
+        mpsc::Receiver<WsMessage>,
+        mpsc::Sender<Result<WsMessage, WsError>>,
+    ) {
+        let (sink_tx, sink_rx) = mpsc::channel(100);
+        let (stream_tx, stream_rx) = mpsc::channel(100);
+
+        (
+            MockWsSink { tx: sink_tx },
+            MockWsStream { rx: stream_rx },
+            sink_rx,
+            stream_tx,
+        )
+    }
+
+    /// Mock WebSocket sink
+    pub struct MockWsSink {
+        tx: mpsc::Sender<WsMessage>,
+    }
+
+    /// Mock WebSocket stream  
+    pub struct MockWsStream {
+        rx: mpsc::Receiver<Result<WsMessage, WsError>>,
+    }
+
+    #[async_trait]
+    impl WsSink for MockWsSink {
+        async fn send(&mut self, msg: WsMessage) -> Result<(), WsError> {
+            self.tx
+                .send(msg)
+                .await
+                .map_err(|_| WsError::ConnectionClosed)
+        }
+    }
+
+    impl WsStream for MockWsStream {
+        fn next(&mut self) -> WsStreamFuture<'_> {
+            Box::pin(async move { self.rx.recv().await })
+        }
     }
 }

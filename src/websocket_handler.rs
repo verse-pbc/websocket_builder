@@ -4,17 +4,16 @@
 //! and framework independence, allowing it to work with any WebSocket implementation.
 
 use crate::{
-    split_actors::{process_on_connect, process_on_disconnect, SplitActors},
-    websocket_trait::{AxumWebSocket, WebSocketConnection, WsMessage, WsSink, WsStream},
+    split_actors::{process_on_connect, process_on_disconnect, SplitActors, SplitActorsConfig},
+    websocket_trait::{AxumWebSocket, WebSocketConnection},
     MessageConverter, Middleware, StateFactory,
 };
 use anyhow::Result;
-use flume;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::warn;
 
 // Type alias for middleware collection
 type MiddlewareCollection<S, I, O> =
@@ -137,19 +136,22 @@ where
             });
         }
 
-        // Create channel for writer task
-        let (websocket_tx, websocket_rx) = flume::bounded::<String>(self.channel_size);
+        // Split the WebSocket
+        let (ws_sink, ws_stream) = socket.split();
 
-        // Spawn split actors
-        let (inbound_sender, outbound_sender) = SplitActors::spawn(
-            shared_state.clone(),
-            self.middlewares.clone(),
-            connection_id.clone(),
-            self.channel_size,
-            websocket_tx,
-            self.message_converter.clone() as Arc<dyn MessageConverter<I, O>>,
-            connection_token.clone(),
-        );
+        // Create config for split actors
+        let split_actors_config = SplitActorsConfig {
+            state: shared_state.clone(),
+            middlewares: self.middlewares.clone(),
+            connection_id: connection_id.clone(),
+            channel_size: self.channel_size,
+            message_converter: self.message_converter.clone() as Arc<dyn MessageConverter<I, O>>,
+            cancellation_token: connection_token.clone(),
+            inbound_buffer_size: Some(16), // Small buffer for backpressure control
+        };
+
+        // Spawn split actors with direct WebSocket I/O
+        let outbound_sender = SplitActors::spawn(split_actors_config, ws_stream, ws_sink);
 
         // Process on_connect event
         process_on_connect(
@@ -160,37 +162,8 @@ where
         )
         .await?;
 
-        // Split the WebSocket
-        let (ws_sink, ws_stream) = socket.split();
-
-        // Spawn reader task
-        let reader_handle = self.spawn_reader(
-            connection_id.clone(),
-            ws_stream,
-            inbound_sender,
-            connection_token.clone(),
-        );
-
-        // Spawn writer task
-        let writer_handle = self.spawn_writer(
-            connection_id.clone(),
-            ws_sink,
-            websocket_rx,
-            connection_token.clone(),
-        );
-
-        // Wait for tasks to complete
-        tokio::select! {
-            _ = reader_handle => {
-                debug!("Reader task completed");
-            }
-            _ = writer_handle => {
-                debug!("Writer task completed");
-            }
-            _ = connection_token.cancelled() => {
-                debug!("Connection cancelled");
-            }
-        }
+        // Wait for cancellation (actors handle their own lifecycle)
+        connection_token.cancelled().await;
 
         // Process on_disconnect event directly
         process_on_disconnect(
@@ -204,114 +177,6 @@ where
 
         // Actors will shut down when their channels are dropped
         Ok(())
-    }
-
-    fn spawn_reader<Str>(
-        &self,
-        connection_id: String,
-        mut ws_stream: Str,
-        inbound_sender: flume::Sender<(String, I)>,
-        cancellation_token: CancellationToken,
-    ) -> tokio::task::JoinHandle<()>
-    where
-        Str: WsStream + Send + 'static,
-    {
-        let message_converter = self.message_converter.clone();
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = cancellation_token.cancelled() => {
-                        break;
-                    }
-
-                    message = ws_stream.next() => {
-                        match message {
-                            Some(Ok(WsMessage::Text(text))) => {
-                                match message_converter.inbound_from_string(text) {
-                                    Ok(Some(msg)) => {
-                                        // Send directly to InboundActor
-                                        if inbound_sender.send((connection_id.clone(), msg)).is_err() {
-                                            error!("InboundActor channel closed");
-                                            break;
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        // Message filtered out
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to convert inbound message: {}", e);
-                                    }
-                                }
-                            }
-                            Some(Ok(WsMessage::Binary(data))) => {
-                                error!("Protocol violation: received binary message with {} bytes - terminating connection as binary messages are not supported", data.len());
-                                break;
-                            }
-                            Some(Ok(WsMessage::Ping(data))) => {
-                                debug!("Received ping with {} bytes", data.len());
-                            }
-                            Some(Ok(WsMessage::Pong(data))) => {
-                                debug!("Received pong with {} bytes", data.len());
-                            }
-                            Some(Ok(WsMessage::Close(_))) => {
-                                debug!("WebSocket closed by client");
-                                break;
-                            }
-                            Some(Err(e)) => {
-                                debug!("WebSocket error: {}", e);
-                                break;
-                            }
-                            None => {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            debug!("Reader task for {} exiting", connection_id);
-        })
-    }
-
-    fn spawn_writer<Snk>(
-        &self,
-        connection_id: String,
-        mut ws_sink: Snk,
-        websocket_rx: flume::Receiver<String>,
-        cancellation_token: CancellationToken,
-    ) -> tokio::task::JoinHandle<()>
-    where
-        Snk: WsSink + Send + 'static,
-    {
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = cancellation_token.cancelled() => {
-                        let _ = ws_sink.send(WsMessage::Close(None)).await;
-                        break;
-                    }
-
-                    message = websocket_rx.recv_async() => {
-                        match message {
-                            Ok(text) => {
-                                // Message already converted to string by OutboundActor
-                                if let Err(e) = ws_sink.send(WsMessage::Text(text)).await {
-                                    error!("Failed to send message to WebSocket: {}", e);
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                // Channel closed
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            debug!("Writer task for {} exiting", connection_id);
-        })
     }
 }
 
