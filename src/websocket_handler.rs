@@ -147,7 +147,6 @@ where
             channel_size: self.channel_size,
             message_converter: self.message_converter.clone() as Arc<dyn MessageConverter<I, O>>,
             cancellation_token: connection_token.clone(),
-            inbound_buffer_size: Some(16), // Small buffer for backpressure control
         };
 
         // Spawn split actors with direct WebSocket I/O

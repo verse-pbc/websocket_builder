@@ -118,17 +118,8 @@ impl<O> MessageSender<O> {
     ///
     /// # Arguments
     /// * `message` - The message to send
-    ///
-    /// # Returns
-    /// * `Ok(())` - Message sent successfully
-    /// * `Err(TrySendError)` - Channel is full or closed
-    pub fn send_bypass(&mut self, message: O) -> Result<(), TrySendError<(O, usize)>> {
+    pub fn send_bypass(&mut self, message: O) {
         let bypass_index = if self.index > 0 { self.index - 1 } else { 0 };
-
-        debug!(
-            "MessageSender bypassing current middleware (index {}) and starting from index {}",
-            self.index, bypass_index
-        );
 
         if let Err(e) = self.sender.try_send((message, bypass_index)) {
             match &e {
@@ -144,11 +135,7 @@ impl<O> MessageSender<O> {
                     );
                 }
             }
-            return Err(e);
         }
-
-        debug!("MessageSender successfully sent bypass message");
-        Ok(())
     }
 
     /// Returns the number of available slots in the channel.

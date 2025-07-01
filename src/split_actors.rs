@@ -17,10 +17,10 @@ pub struct InboundActorConfig<S, M, O> {
     pub state: Arc<RwLock<S>>,
     pub middlewares: SharedMiddlewareVec<S, M, O>,
     pub outbound_sender: Sender<(O, usize)>,
+    pub control_sender: Sender<WsMessage>,
     pub message_converter: Arc<dyn MessageConverter<M, O>>,
     pub connection_id: String,
     pub cancellation_token: CancellationToken,
-    pub buffer_size: Option<usize>,
 }
 
 /// Actor responsible for processing inbound messages
@@ -32,12 +32,10 @@ where
     middlewares: SharedMiddlewareVec<S, M, O>,
     ws_stream: Str,
     outbound_sender: Sender<(O, usize)>,
+    control_sender: Sender<WsMessage>,
     message_converter: Arc<dyn MessageConverter<M, O>>,
     connection_id: String,
     cancellation_token: CancellationToken,
-    // Optional bounded buffer for backpressure control
-    inbound_buffer: Option<Receiver<M>>,
-    buffer_sender: Option<Sender<M>>,
 }
 
 impl<S, M, O, Str> InboundActor<S, M, O, Str>
@@ -49,23 +47,15 @@ where
 {
     /// Creates a new InboundActor
     pub fn new(config: InboundActorConfig<S, M, O>, ws_stream: Str) -> Self {
-        let (inbound_buffer, buffer_sender) = if let Some(size) = config.buffer_size {
-            let (tx, rx) = flume::bounded::<M>(size);
-            (Some(rx), Some(tx))
-        } else {
-            (None, None)
-        };
-
         Self {
             state: config.state,
             middlewares: config.middlewares,
             ws_stream,
             outbound_sender: config.outbound_sender,
+            control_sender: config.control_sender,
             message_converter: config.message_converter,
             connection_id: config.connection_id,
             cancellation_token: config.cancellation_token,
-            inbound_buffer,
-            buffer_sender,
         }
     }
 
@@ -77,38 +67,22 @@ where
         tokio::spawn(async move {
             debug!("InboundActor starting for connection {}", connection_id);
             actor.run().await;
+
+            // Ensure cancellation is triggered when actor stops for any reason
+            if !actor.cancellation_token.is_cancelled() {
+                debug!(
+                    "InboundActor triggering cancellation on exit for connection {}",
+                    connection_id
+                );
+                actor.cancellation_token.cancel();
+            }
+
             info!("InboundActor stopped for connection {}", connection_id);
         });
     }
 
     /// Main run loop for the actor
     async fn run(&mut self) {
-        // If we have a buffer, spawn a task to process messages from it
-        if let (Some(buffer), Some(_sender)) =
-            (self.inbound_buffer.take(), self.buffer_sender.clone())
-        {
-            let state = self.state.clone();
-            let middlewares = self.middlewares.clone();
-            let outbound_sender = self.outbound_sender.clone();
-            let connection_id = self.connection_id.clone();
-
-            tokio::spawn(async move {
-                while let Ok(message) = buffer.recv_async().await {
-                    if let Err(e) = Self::process_buffered_message(
-                        state.clone(),
-                        middlewares.clone(),
-                        outbound_sender.clone(),
-                        connection_id.clone(),
-                        message,
-                    )
-                    .await
-                    {
-                        error!("Error processing buffered message: {}", e);
-                    }
-                }
-            });
-        }
-
         loop {
             select! {
                 _ = self.cancellation_token.cancelled() => {
@@ -121,16 +95,9 @@ where
                         Some(Ok(WsMessage::Text(text))) => {
                             match self.message_converter.inbound_from_string(text) {
                                 Ok(Some(msg)) => {
-                                    if let Some(sender) = &self.buffer_sender {
-                                        // Use buffer if available
-                                        if let Err(e) = sender.try_send(msg) {
-                                            warn!("Inbound buffer full, dropping message: {}", e);
-                                        }
-                                    } else {
-                                        // Process directly without buffer
-                                        if let Err(e) = self.process_inbound(msg).await {
-                                            error!("Error processing inbound message: {}", e);
-                                        }
+                                    // Process directly
+                                    if let Err(e) = self.process_inbound(msg).await {
+                                        error!("Error processing inbound message: {}", e);
                                     }
                                 }
                                 Ok(None) => {
@@ -147,7 +114,10 @@ where
                         }
                         Some(Ok(WsMessage::Ping(data))) => {
                             debug!("Received ping with {} bytes", data.len());
-                            // TODO: Send pong response when OutboundActor is updated
+                            // Send pong response with the same data
+                            if let Err(e) = self.control_sender.try_send(WsMessage::Pong(data)) {
+                                debug!("Failed to send pong response: {}", e);
+                            }
                         }
                         Some(Ok(WsMessage::Pong(data))) => {
                             debug!("Received pong with {} bytes", data.len());
@@ -193,30 +163,6 @@ where
 
         Ok(())
     }
-
-    /// Process a message from the buffer (static method for spawned task)
-    async fn process_buffered_message(
-        state: Arc<RwLock<S>>,
-        middlewares: SharedMiddlewareVec<S, M, O>,
-        outbound_sender: Sender<(O, usize)>,
-        connection_id: String,
-        message: M,
-    ) -> Result<()> {
-        let mut ctx = InboundContext::new(
-            connection_id,
-            Some(message),
-            Some(outbound_sender),
-            state,
-            middlewares.clone(),
-            0,
-        );
-
-        if let Some(middleware) = middlewares.first() {
-            middleware.process_inbound(&mut ctx).await?;
-        }
-
-        Ok(())
-    }
 }
 
 /// Configuration for OutboundActor
@@ -237,6 +183,7 @@ where
     state: Arc<RwLock<S>>,
     middlewares: SharedMiddlewareVec<S, M, O>,
     receiver: Receiver<(O, usize)>, // (message, middleware_index)
+    control_receiver: Receiver<WsMessage>, // Control frames (ping/pong)
     connection_id: String,
     /// Direct WebSocket sink
     ws_sink: Snk,
@@ -253,35 +200,53 @@ where
     O: Send + Sync + 'static,
     Snk: WsSink + Send + 'static,
 {
-    /// Creates a new OutboundActor  
-    fn new(config: OutboundActorConfig<S, M, O>, ws_sink: Snk) -> (Self, Sender<(O, usize)>) {
+    /// Creates a new OutboundActor
+    fn new(
+        config: OutboundActorConfig<S, M, O>,
+        ws_sink: Snk,
+    ) -> (Self, Sender<(O, usize)>, Sender<WsMessage>) {
         let (tx, rx) = flume::bounded::<(O, usize)>(config.channel_size);
+        let (control_tx, control_rx) = flume::bounded::<WsMessage>(32); // Small buffer for control frames
 
         let actor = Self {
             state: config.state,
             middlewares: config.middlewares,
             receiver: rx,
+            control_receiver: control_rx,
             connection_id: config.connection_id,
             ws_sink,
             message_converter: config.message_converter,
             cancellation_token: config.cancellation_token,
         };
 
-        (actor, tx)
+        (actor, tx, control_tx)
     }
 
-    /// Spawns the actor and returns a sender for outbound messages
-    pub fn spawn(config: OutboundActorConfig<S, M, O>, ws_sink: Snk) -> Sender<(O, usize)> {
+    /// Spawns the actor and returns senders for outbound messages and control frames
+    pub fn spawn(
+        config: OutboundActorConfig<S, M, O>,
+        ws_sink: Snk,
+    ) -> (Sender<(O, usize)>, Sender<WsMessage>) {
         let connection_id = config.connection_id.clone();
-        let (mut actor, tx) = Self::new(config, ws_sink);
+        let (mut actor, tx, control_tx) = Self::new(config, ws_sink);
 
         tokio::spawn(async move {
             debug!("OutboundActor starting for connection {}", connection_id);
             actor.run().await;
+
+            // Ensure cancellation is triggered when actor stops for any reason
+            if !actor.cancellation_token.is_cancelled() {
+                debug!(
+                    "OutboundActor triggering cancellation on exit for connection {}",
+                    connection_id
+                );
+                actor.cancellation_token.cancel();
+            }
+
             debug!("OutboundActor stopped for connection {}", connection_id);
         });
 
-        tx
+        (tx, control_tx)
     }
 
     /// Main run loop for the actor
@@ -292,12 +257,50 @@ where
                     // Send close frame before shutting down
                     debug!("OutboundActor cancelled, sending close frame");
                     let _ = self.ws_sink.send(WsMessage::Close(None)).await;
+
+                    // Drain any remaining messages without processing them
+                    while self.receiver.try_recv().is_ok() {
+                        debug!("Discarding message after cancellation");
+                    }
+                    while self.control_receiver.try_recv().is_ok() {
+                        debug!("Discarding control frame after cancellation");
+                    }
+
                     break;
+                }
+
+                control_frame = self.control_receiver.recv_async() => {
+                    match control_frame {
+                        Ok(frame) => {
+                            // Check if we've been cancelled before sending
+                            if self.cancellation_token.is_cancelled() {
+                                debug!("Discarding control frame - connection cancelled");
+                                continue;
+                            }
+
+                            // Send control frame directly
+                            if let Err(e) = self.ws_sink.send(frame).await {
+                                if !self.cancellation_token.is_cancelled() {
+                                    error!("Failed to send control frame: {}", e);
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Control channel closed
+                            debug!("OutboundActor control receiver closed");
+                        }
+                    }
                 }
 
                 message = self.receiver.recv_async() => {
                     match message {
                         Ok((msg, middleware_index)) => {
+                            // Check if we've been cancelled before processing
+                            if self.cancellation_token.is_cancelled() {
+                                debug!("Discarding message - connection cancelled");
+                                continue;
+                            }
+
                             if let Err(e) = self.process_outbound(msg, middleware_index).await {
                                 error!("Error processing outbound message: {}", e);
                             }
@@ -351,7 +354,22 @@ where
                     // Success
                 }
                 Ok(Err(e)) => {
-                    error!("Failed to send message to WebSocket: {}", e);
+                    let error_string = e.to_string();
+
+                    // Check for the specific close-related error
+                    if error_string.contains("Sending after closing is not allowed") {
+                        // This is expected during close handshake, but we want to track what was dropped
+                        warn!(
+                            "Message dropped during close handshake for connection {}",
+                            self.connection_id
+                        );
+                        return Ok(());
+                    }
+
+                    // Only log error if we're not cancelled (expected during shutdown)
+                    if !self.cancellation_token.is_cancelled() {
+                        error!("Failed to send message to WebSocket: {}", e);
+                    }
                     return Err(anyhow::anyhow!("WebSocket send failed: {}", e));
                 }
                 Err(_) => {
@@ -373,7 +391,6 @@ pub struct SplitActorsConfig<S, M, O> {
     pub channel_size: usize,
     pub message_converter: Arc<dyn MessageConverter<M, O>>,
     pub cancellation_token: CancellationToken,
-    pub inbound_buffer_size: Option<usize>,
 }
 
 /// Helper struct to manage the lifecycle of both actors
@@ -409,17 +426,17 @@ where
         };
 
         // Create outbound actor first
-        let outbound_sender = OutboundActor::spawn(outbound_config, ws_sink);
+        let (outbound_sender, control_sender) = OutboundActor::spawn(outbound_config, ws_sink);
 
         // Create inbound actor config
         let inbound_config = InboundActorConfig {
             state: config.state,
             middlewares: config.middlewares,
             outbound_sender: outbound_sender.clone(),
+            control_sender,
             message_converter: config.message_converter,
             connection_id: config.connection_id,
             cancellation_token: config.cancellation_token,
-            buffer_size: config.inbound_buffer_size,
         };
 
         // Create inbound actor with direct stream reading
