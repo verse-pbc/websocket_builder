@@ -14,19 +14,19 @@ use websocket_builder::{
 #[derive(Debug, Clone)]
 struct TestState {
     counter: Arc<AtomicUsize>,
-    messages: Arc<tokio::sync::Mutex<Vec<String>>>,
+    messages: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 impl TestState {
     fn new() -> Self {
         Self {
             counter: Arc::new(AtomicUsize::new(0)),
-            messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
-    async fn add_message(&self, msg: String) {
-        self.messages.lock().await.push(msg);
+    fn add_message(&self, msg: String) {
+        self.messages.lock().push(msg);
     }
 
     fn increment(&self) -> usize {
@@ -73,12 +73,8 @@ impl Middleware for CounterMiddleware {
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &ctx.message {
-            ctx.state
-                .read()
-                .await
-                .add_message(format!("Inbound: {msg}"))
-                .await;
-            ctx.state.write().await.increment();
+            ctx.state.read().add_message(format!("Inbound: {msg}"));
+            ctx.state.write().increment();
         }
         ctx.next().await
     }
@@ -88,11 +84,7 @@ impl Middleware for CounterMiddleware {
         ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(msg) = &ctx.message {
-            ctx.state
-                .read()
-                .await
-                .add_message(format!("Outbound: {msg}"))
-                .await;
+            ctx.state.read().add_message(format!("Outbound: {msg}"));
         }
         ctx.next().await
     }
@@ -101,11 +93,7 @@ impl Middleware for CounterMiddleware {
         &self,
         ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state
-            .read()
-            .await
-            .add_message("Connected".to_string())
-            .await;
+        ctx.state.read().add_message("Connected".to_string());
         if let Some(sender) = &mut ctx.sender {
             sender.send("Welcome".to_string())?;
         }
@@ -116,11 +104,7 @@ impl Middleware for CounterMiddleware {
         &self,
         ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state
-            .read()
-            .await
-            .add_message("Disconnected".to_string())
-            .await;
+        ctx.state.read().add_message("Disconnected".to_string());
         Ok(())
     }
 }
@@ -234,9 +218,7 @@ impl Middleware for PrefixMiddleware {
             *msg = format!("{}:{}", self.0, msg);
             ctx.state
                 .read()
-                .await
-                .add_message(format!("Processed by {}", self.0))
-                .await;
+                .add_message(format!("Processed by {}", self.0));
         }
         ctx.next().await
     }

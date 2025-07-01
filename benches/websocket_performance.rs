@@ -76,7 +76,7 @@ impl Middleware for HeavyMiddleware {
             tokio::time::sleep(self.work_duration).await;
 
             {
-                let mut state = ctx.state.write().await;
+                let mut state = ctx.state.write();
                 state.message_count += 1;
                 state.processing_time_sum += start.elapsed();
                 state.last_message_time = Some(Instant::now());
@@ -119,7 +119,7 @@ impl Middleware for LightMiddleware {
         &self,
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<(), anyhow::Error> {
-        ctx.state.write().await.message_count += 1;
+        ctx.state.write().message_count += 1;
         self.processed_count.fetch_add(1, Ordering::Relaxed);
         ctx.next().await
     }

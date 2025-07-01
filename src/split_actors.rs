@@ -1,8 +1,9 @@
 use anyhow::Result;
 use flume::{Receiver, Sender};
+use parking_lot::RwLock;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::{select, sync::RwLock};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -443,16 +444,17 @@ where
 {
     debug!("Processing on_connect for connection {}", connection_id);
 
-    for (index, middleware) in middlewares.iter().enumerate() {
+    // Only call the first middleware - it will chain to the rest via ctx.next()
+    if !middlewares.is_empty() {
         let mut ctx = ConnectionContext::new(
             connection_id.to_string(),
             Some(outbound_sender.clone()),
             state.clone(),
             middlewares.clone(),
-            index,
+            0, // Start at index 0
         );
 
-        middleware.on_connect(&mut ctx).await?;
+        middlewares[0].on_connect(&mut ctx).await?;
     }
 
     Ok(())
@@ -472,16 +474,17 @@ where
 {
     debug!("Processing on_disconnect for connection {}", connection_id);
 
-    for (index, middleware) in middlewares.iter().enumerate() {
+    // Only call the first middleware - it will chain to the rest via ctx.next()
+    if !middlewares.is_empty() {
         let mut ctx = DisconnectContext::new(
             connection_id.to_string(),
             Some(outbound_sender.clone()),
             state.clone(),
             middlewares.clone(),
-            index,
+            0, // Start at index 0
         );
 
-        middleware.on_disconnect(&mut ctx).await?;
+        middlewares[0].on_disconnect(&mut ctx).await?;
     }
 
     Ok(())

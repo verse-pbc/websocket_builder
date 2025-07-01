@@ -15,7 +15,7 @@ use websocket_builder::{
 #[derive(Debug, Clone)]
 struct ComprehensiveTestState {
     counter: Arc<AtomicUsize>,
-    messages: Arc<tokio::sync::Mutex<Vec<String>>>,
+    messages: Arc<parking_lot::Mutex<Vec<String>>>,
     connected: Arc<std::sync::atomic::AtomicBool>,
     error_count: Arc<AtomicUsize>,
 }
@@ -24,18 +24,18 @@ impl ComprehensiveTestState {
     fn new() -> Self {
         Self {
             counter: Arc::new(AtomicUsize::new(0)),
-            messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             connected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             error_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    async fn add_message(&self, msg: String) {
-        self.messages.lock().await.push(msg);
+    fn add_message(&self, msg: String) {
+        self.messages.lock().push(msg);
     }
 
-    async fn get_message_count(&self) -> usize {
-        self.messages.lock().await.len()
+    fn get_message_count(&self) -> usize {
+        self.messages.lock().len()
     }
 
     fn increment_counter(&self) -> usize {
@@ -107,12 +107,10 @@ impl Middleware for ConnectionLifecycleMiddleware {
         &self,
         ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state.write().await.set_connected(true);
+        ctx.state.write().set_connected(true);
         ctx.state
             .read()
-            .await
-            .add_message(format!("{}: connected", self.name))
-            .await;
+            .add_message(format!("{}: connected", self.name));
 
         // Send welcome message
         if let Some(sender) = &mut ctx.sender {
@@ -125,12 +123,10 @@ impl Middleware for ConnectionLifecycleMiddleware {
         &self,
         ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        ctx.state.write().await.set_connected(false);
+        ctx.state.write().set_connected(false);
         ctx.state
             .read()
-            .await
-            .add_message(format!("{}: disconnected", self.name))
-            .await;
+            .add_message(format!("{}: disconnected", self.name));
         Ok(())
     }
 
@@ -139,12 +135,10 @@ impl Middleware for ConnectionLifecycleMiddleware {
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(message) = &ctx.message {
-            let count = ctx.state.write().await.increment_counter();
+            let count = ctx.state.write().increment_counter();
             ctx.state
                 .read()
-                .await
-                .add_message(format!("{}: inbound {}: {}", self.name, count, message))
-                .await;
+                .add_message(format!("{}: inbound {}: {}", self.name, count, message));
 
             // Echo the message back
             if let Some(sender) = &mut ctx.sender {
@@ -163,9 +157,7 @@ impl Middleware for ConnectionLifecycleMiddleware {
         if let Some(message) = &ctx.message {
             ctx.state
                 .read()
-                .await
-                .add_message(format!("{}: outbound: {}", self.name, message))
-                .await;
+                .add_message(format!("{}: outbound: {}", self.name, message));
         }
 
         // Call next middleware
@@ -214,7 +206,7 @@ impl Middleware for ErrorMiddleware {
         ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_connect {
-            ctx.state.write().await.increment_error();
+            ctx.state.write().increment_error();
             return Err(anyhow::anyhow!("Error middleware: connect failed"));
         }
         ctx.next().await
@@ -225,7 +217,7 @@ impl Middleware for ErrorMiddleware {
         ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_disconnect {
-            ctx.state.write().await.increment_error();
+            ctx.state.write().increment_error();
             return Err(anyhow::anyhow!("Error middleware: disconnect failed"));
         }
         ctx.next().await
@@ -236,7 +228,7 @@ impl Middleware for ErrorMiddleware {
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_inbound {
-            ctx.state.write().await.increment_error();
+            ctx.state.write().increment_error();
             return Err(anyhow::anyhow!("Error middleware: inbound failed"));
         }
         ctx.next().await
@@ -247,7 +239,7 @@ impl Middleware for ErrorMiddleware {
         ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if self.fail_on_outbound {
-            ctx.state.write().await.increment_error();
+            ctx.state.write().increment_error();
             return Err(anyhow::anyhow!("Error middleware: outbound failed"));
         }
         ctx.next().await
@@ -449,9 +441,9 @@ async fn test_comprehensive_state_functionality() {
     assert!(!state.is_connected());
 
     // Test message functionality
-    state.add_message("First message".to_string()).await;
-    state.add_message("Second message".to_string()).await;
-    assert_eq!(state.get_message_count().await, 2);
+    state.add_message("First message".to_string());
+    state.add_message("Second message".to_string());
+    assert_eq!(state.get_message_count(), 2);
 
     // Test error counting
     assert_eq!(state.increment_error(), 1);

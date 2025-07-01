@@ -187,7 +187,7 @@ where
     O: Send + Sync + 'static,
 {
     pub connection_id: String,
-    pub state: Arc<tokio::sync::RwLock<S>>,
+    pub state: Arc<parking_lot::RwLock<S>>,
     pub sender: Option<MessageSender<O>>,
     pub(crate) index: usize,
     pub(crate) middlewares: SharedMiddlewareVec<S, M, O>,
@@ -199,7 +199,7 @@ impl<S: Send + Sync + 'static, M: Send + Sync + 'static, O: Send + Sync + 'stati
     pub fn new(
         connection_id: String,
         sender: Option<Sender<(O, usize)>>,
-        state: Arc<tokio::sync::RwLock<S>>,
+        state: Arc<parking_lot::RwLock<S>>,
         middlewares: SharedMiddlewareVec<S, M, O>,
         index: usize,
     ) -> Self {
@@ -250,7 +250,7 @@ where
     O: Send + Sync + 'static,
 {
     pub connection_id: String,
-    pub state: Arc<tokio::sync::RwLock<S>>,
+    pub state: Arc<parking_lot::RwLock<S>>,
     pub sender: Option<MessageSender<O>>,
     pub(crate) index: usize,
     pub(crate) middlewares: SharedMiddlewareVec<S, M, O>,
@@ -262,7 +262,7 @@ impl<S: Send + Sync + 'static, M: Send + Sync + 'static, O: Send + Sync + 'stati
     pub fn new(
         connection_id: String,
         sender: Option<Sender<(O, usize)>>,
-        state: Arc<tokio::sync::RwLock<S>>,
+        state: Arc<parking_lot::RwLock<S>>,
         middlewares: SharedMiddlewareVec<S, M, O>,
         index: usize,
     ) -> Self {
@@ -313,7 +313,7 @@ where
     O: Send + Sync + 'static,
 {
     pub connection_id: String,
-    pub state: Arc<tokio::sync::RwLock<S>>,
+    pub state: Arc<parking_lot::RwLock<S>>,
     pub sender: Option<MessageSender<O>>,
     pub(crate) index: usize,
     pub(crate) middlewares: SharedMiddlewareVec<S, M, O>,
@@ -327,7 +327,7 @@ impl<S: Send + Sync + 'static, M: Send + Sync + 'static, O: Send + Sync + 'stati
         connection_id: String,
         message: Option<M>,
         sender: Option<Sender<(O, usize)>>,
-        state: Arc<tokio::sync::RwLock<S>>,
+        state: Arc<parking_lot::RwLock<S>>,
         middlewares: SharedMiddlewareVec<S, M, O>,
         index: usize,
     ) -> Self {
@@ -383,7 +383,7 @@ where
     O: Send + Sync + 'static,
 {
     pub connection_id: String,
-    pub state: Arc<tokio::sync::RwLock<S>>,
+    pub state: Arc<parking_lot::RwLock<S>>,
     pub sender: Option<MessageSender<O>>,
     pub(crate) index: usize,
     pub(crate) middlewares: SharedMiddlewareVec<S, M, O>,
@@ -397,7 +397,7 @@ impl<S: Send + Sync + 'static, M: Send + Sync + 'static, O: Send + Sync + 'stati
         connection_id: String,
         message: O,
         sender: Option<Sender<(O, usize)>>,
-        state: Arc<tokio::sync::RwLock<S>>,
+        state: Arc<parking_lot::RwLock<S>>,
         middlewares: SharedMiddlewareVec<S, M, O>,
         index: usize,
     ) -> Self {

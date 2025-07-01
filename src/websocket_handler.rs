@@ -115,7 +115,7 @@ where
 
         // Create initial state wrapped in Arc<RwLock<>>
         let initial_state = self.state_factory.create_state(connection_token.clone());
-        let shared_state = Arc::new(tokio::sync::RwLock::new(initial_state));
+        let shared_state = Arc::new(parking_lot::RwLock::new(initial_state));
 
         // Spawn timeout task if max_connection_time is configured
         if let Some(max_time) = self.max_connection_time {
