@@ -39,8 +39,15 @@ impl TestState {
 struct TestConverter;
 
 impl MessageConverter<String, String> for TestConverter {
-    fn inbound_from_string(&self, s: String) -> Result<Option<String>> {
-        Ok(Some(s))
+    fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Ok(Some(s.to_string())),
+            Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
+        }
+    }
+
+    fn outbound_to_bytes(&self, message: String) -> Result<std::borrow::Cow<'_, [u8]>> {
+        Ok(std::borrow::Cow::Owned(message.into_bytes()))
     }
 
     fn outbound_to_string(&self, s: String) -> Result<String> {
@@ -192,7 +199,7 @@ async fn test_message_converter() {
     let converter = TestConverter;
 
     // Test inbound conversion
-    let inbound = converter.inbound_from_string("Hello".to_string()).unwrap();
+    let inbound = converter.inbound_from_bytes("Hello".as_bytes()).unwrap();
     assert_eq!(inbound, Some("Hello".to_string()));
 
     // Test outbound conversion

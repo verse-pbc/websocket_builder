@@ -7,37 +7,8 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-/// A trait for converting between wire format (string) messages and application types.
-///
-/// This trait handles the conversion of messages between the wire format (strings)
-/// used by the WebSocket protocol and the application-specific types used by
-/// the middleware chain.
-///
-/// # Type Parameters
-/// * `I` - The type of incoming messages after conversion
-/// * `O` - The type of outgoing messages before conversion
-pub trait MessageConverter<I, O>: Send + Sync {
-    /// Converts an incoming string message to the application type.
-    ///
-    /// # Arguments
-    /// * `message` - The string message received from the WebSocket
-    ///
-    /// # Returns
-    /// * `Ok(Some(I))` - Successfully converted message
-    /// * `Ok(None)` - Message should be ignored
-    /// * `Err` - Conversion failed
-    fn inbound_from_string(&self, message: String) -> Result<Option<I>, anyhow::Error>;
-
-    /// Converts an outgoing application message to a string.
-    ///
-    /// # Arguments
-    /// * `message` - The application message to convert
-    ///
-    /// # Returns
-    /// * `Ok(String)` - Successfully converted message
-    /// * `Err` - Conversion failed
-    fn outbound_to_string(&self, message: O) -> Result<String, anyhow::Error>;
-}
+// Re-export the MessageConverter trait from the message_converter module
+pub use crate::message_converter::MessageConverter;
 
 /// A wrapper for sending messages through the middleware chain.
 ///

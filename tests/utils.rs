@@ -1,7 +1,7 @@
 #[cfg(test)]
 use anyhow::Result;
 #[cfg(test)]
-use axum::{extract::ws::WebSocketUpgrade, routing::get, Router};
+use axum::{routing::get, Router};
 #[cfg(test)]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(test)]
@@ -12,9 +12,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
-use websocket_builder::AxumWebSocketExt;
 #[cfg(test)]
-use websocket_builder::{MessageConverter, StateFactory, WebSocketHandler};
+use websocket_builder::{
+    MessageConverter, StateFactory, UnifiedWebSocketExt, WebSocketHandler,
+    WebSocketUpgrade as WsUpgrade,
+};
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -86,16 +88,14 @@ where
         let app = Router::new()
             .route(
                 "/",
-                get(move |ws: WebSocketUpgrade| {
+                get(move |ws: WsUpgrade| {
                     let state = Arc::clone(&server_state_clone);
                     let addr = addr.clone();
+                    let ws_handler = Arc::new(state.ws_handler.clone());
                     async move {
-                        ws.on_upgrade(move |socket| async move {
-                            let _ = state
-                                .ws_handler
-                                .start_axum(socket, addr.clone(), state.shutdown.clone())
-                                .await;
-                        })
+                        ws_handler
+                            .handle_upgrade(ws, addr.clone(), state.shutdown.clone())
+                            .await
                     }
                 }),
             )

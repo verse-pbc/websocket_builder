@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(rustc:*)",
+      "Bash(cargo build:*)",
+      "Bash(rm:*)",
+      "WebFetch(domain:docs.rs)",
+      "mcp__scan_crate__scan_crate",
+      "Bash(grep:*)",
+      "Bash(timeout:*)",
+      "Bash(chmod:*)",
+      "Bash(cargo bench:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo test)",
+      "Bash(cargo doc:*)",
+      "Bash(true)",
+      "Bash(rg:*)"
+    ],
+    "deny": []
+  }
+}

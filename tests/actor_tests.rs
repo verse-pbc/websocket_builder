@@ -70,12 +70,19 @@ impl StateFactory<ComprehensiveTestState> for ComprehensiveStateFactory {
 struct ComprehensiveConverter;
 
 impl MessageConverter<String, String> for ComprehensiveConverter {
-    fn inbound_from_string(&self, message: String) -> Result<Option<String>> {
-        if message.is_empty() {
+    fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
+        if bytes.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(message))
+            match std::str::from_utf8(bytes) {
+                Ok(s) => Ok(Some(s.to_string())),
+                Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
+            }
         }
+    }
+
+    fn outbound_to_bytes(&self, message: String) -> Result<std::borrow::Cow<'_, [u8]>> {
+        Ok(std::borrow::Cow::Owned(message.into_bytes()))
     }
 
     fn outbound_to_string(&self, message: String) -> Result<String> {
@@ -395,12 +402,12 @@ async fn test_message_converter_comprehensive() {
 
     // Test inbound string conversion
     let inbound_result = converter
-        .inbound_from_string("Hello World".to_string())
+        .inbound_from_bytes("Hello World".as_bytes())
         .unwrap();
     assert_eq!(inbound_result, Some("Hello World".to_string()));
 
     // Test empty string (should return None)
-    let inbound_result = converter.inbound_from_string("".to_string()).unwrap();
+    let inbound_result = converter.inbound_from_bytes(&[]).unwrap();
     assert_eq!(inbound_result, None);
 
     // Test outbound conversion

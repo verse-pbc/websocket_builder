@@ -61,8 +61,8 @@ where
 
     /// Spawns the actor
     pub fn spawn(config: InboundActorConfig<S, M, O>, ws_stream: Str) {
-        let connection_id = config.connection_id.clone();
         let mut actor = Self::new(config, ws_stream);
+        let connection_id = actor.connection_id.clone();
 
         tokio::spawn(async move {
             debug!("InboundActor starting for connection {}", connection_id);
@@ -93,7 +93,7 @@ where
                 message = self.ws_stream.next() => {
                     match message {
                         Some(Ok(WsMessage::Text(text))) => {
-                            match self.message_converter.inbound_from_string(text) {
+                            match self.message_converter.inbound_from_bytes(text.as_bytes()) {
                                 Ok(Some(msg)) => {
                                     // Process directly
                                     if let Err(e) = self.process_inbound(msg).await {
@@ -227,8 +227,8 @@ where
         config: OutboundActorConfig<S, M, O>,
         ws_sink: Snk,
     ) -> (Sender<(O, usize)>, Sender<WsMessage>) {
-        let connection_id = config.connection_id.clone();
         let (mut actor, tx, control_tx) = Self::new(config, ws_sink);
+        let connection_id = actor.connection_id.clone();
 
         tokio::spawn(async move {
             debug!("OutboundActor starting for connection {}", connection_id);
@@ -415,28 +415,35 @@ where
         Str: WsStream + Send + 'static,
         Snk: WsSink + Send + 'static,
     {
+        // Clone shared references that both actors need
+        let state_clone = Arc::clone(&config.state);
+        let middlewares_clone = Arc::clone(&config.middlewares);
+        let connection_id_clone = config.connection_id.clone();
+        let message_converter_clone = Arc::clone(&config.message_converter);
+        let cancellation_token_clone = config.cancellation_token.clone();
+
         // Create outbound actor config
         let outbound_config = OutboundActorConfig {
-            state: config.state.clone(),
-            middlewares: config.middlewares.clone(),
-            connection_id: config.connection_id.clone(),
-            message_converter: config.message_converter.clone(),
-            cancellation_token: config.cancellation_token.clone(),
+            state: config.state,
+            middlewares: config.middlewares,
+            connection_id: config.connection_id,
+            message_converter: config.message_converter,
+            cancellation_token: config.cancellation_token,
             channel_size: config.channel_size,
         };
 
         // Create outbound actor first
         let (outbound_sender, control_sender) = OutboundActor::spawn(outbound_config, ws_sink);
 
-        // Create inbound actor config
+        // Create inbound actor config using the cloned references
         let inbound_config = InboundActorConfig {
-            state: config.state,
-            middlewares: config.middlewares,
+            state: state_clone,
+            middlewares: middlewares_clone,
             outbound_sender: outbound_sender.clone(),
             control_sender,
-            message_converter: config.message_converter,
-            connection_id: config.connection_id,
-            cancellation_token: config.cancellation_token,
+            message_converter: message_converter_clone,
+            connection_id: connection_id_clone,
+            cancellation_token: cancellation_token_clone,
         };
 
         // Create inbound actor with direct stream reading

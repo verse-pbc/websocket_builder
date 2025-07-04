@@ -13,59 +13,76 @@ A low-level middleware-based WebSocket framework for building protocol-aware ser
 - Fire-and-forget message processing with configurable backpressure
 - Per-connection state management with automatic cleanup
 - Framework-agnostic design via WebSocket trait abstraction
+- Support for both tungstenite and fastwebsockets backends
+- Write once, switch backends with feature flags
 
 ## Installation
 
-Add this to your `Cargo.toml`. Use current stable versions for dependencies.
+Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-websocket_builder = "0.1.0-alpha.1"
+websocket_builder = "0.2.0-alpha.1"
 tokio = { version = "1.x", features = ["full"] }
-axum = { version = "0.7.x", features = ["ws"] }
+axum = { version = "0.8.x", features = ["ws"] }
 async-trait = "0.1.x"
-anyhow = "1.0.x" # For Result types
+anyhow = "1.0.x"
 ```
 
-## Quick Example: Message Transformation Pipeline
+### WebSocket Backends
 
-This example demonstrates the core feature: processing messages through a bidirectional middleware pipeline.
-An incoming message is transformed by inbound middleware stages. One middleware then echoes the transformed message back.
-This echoed message then flows through the outbound middleware stages before being sent to the client.
+This library supports two WebSocket implementations that you can switch between using feature flags:
+
+- **Tungstenite** (default) - Mature, widely-used, excellent compatibility
+- **FastWebSockets** - High performance, low latency, minimal overhead
+
+```toml
+# Use tungstenite (default)
+websocket_builder = "0.2.0-alpha.1"
+
+# Use fastwebsockets
+websocket_builder = { version = "0.1.0-alpha.1", default-features = false, features = ["fastwebsockets"] }
+```
+
+Both backends use the same API, so you can switch between them without changing your code.
+
+## Quick Example: Echo Server with Middleware
 
 ```rust
 use async_trait::async_trait;
 use axum::{
-    extract::{ws::WebSocketUpgrade, ConnectInfo, State},
+    extract::State,
     response::IntoResponse,
     routing::get,
     Router,
 };
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, MessageConverter, Middleware, OutboundContext, SendMessage, StateFactory,
-    WebSocketBuilder, WebSocketHandler,
+    InboundContext, MessageConverter, Middleware, SendMessage, StateFactory,
+    UnifiedWebSocketExt, WebSocketBuilder, WebSocketUpgrade,
 };
 use anyhow::Result;
 
-// 1. Minimal State (not actively used in transformation for this example)
+// Define your state
 #[derive(Debug, Clone, Default)]
-pub struct MinimalState;
+struct AppState {
+    name: String,
+}
 
-// 2. Minimal State Factory
+// State factory
 #[derive(Clone)]
-pub struct MinimalStateFactory;
+struct AppStateFactory;
 
-impl StateFactory<Arc<MinimalState>> for MinimalStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> Arc<MinimalState> {
-        Arc::new(MinimalState::default())
+impl StateFactory<Arc<AppState>> for AppStateFactory {
+    fn create_state(&self, _token: CancellationToken) -> Arc<AppState> {
+        Arc::new(AppState { name: "WebSocket Server".to_string() })
     }
 }
 
-// 3. Simple String Message Converter
+// Message converter
 #[derive(Clone, Debug)]
-pub struct StringConverter;
+struct StringConverter;
 
 impl MessageConverter<String, String> for StringConverter {
     fn inbound_from_string(&self, payload: String) -> Result<Option<String>> {
@@ -76,136 +93,136 @@ impl MessageConverter<String, String> for StringConverter {
     }
 }
 
-// 4. Middleware Stages
-
-// StageOneMiddleware: First transformation for inbound and last for outbound.
-#[derive(Debug, Clone)]
-pub struct StageOneMiddleware;
+// Echo middleware
+#[derive(Debug)]
+struct EchoMiddleware;
 
 #[async_trait]
-impl Middleware for StageOneMiddleware {
-    type State = Arc<MinimalState>;
+impl Middleware for EchoMiddleware {
+    type State = Arc<AppState>;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
-    async fn process_inbound(&self, ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>) -> Result<()> {
-        if let Some(msg) = ctx.message.take() { // Take ownership to modify
-            ctx.message = Some(format!("S1_IN:{}", msg));
-        }
-        ctx.next().await
-    }
-
-    async fn process_outbound(&self, ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>) -> Result<()> {
-        if let Some(msg) = ctx.message.take() { // Take ownership to modify
-            ctx.message = Some(format!("S1_OUT:{}", msg));
+    async fn process_inbound(
+        &self,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    ) -> Result<()> {
+        if let Some(message) = &ctx.message {
+            ctx.send_message(format!("Echo: {}", message))?;
         }
         ctx.next().await
     }
 }
 
-// StageTwoEchoMiddleware: Second transformation, then echoes the message back.
-#[derive(Debug, Clone)]
-pub struct StageTwoEchoMiddleware;
-
-#[async_trait]
-impl Middleware for StageTwoEchoMiddleware {
-    type State = Arc<MinimalState>;
-    type IncomingMessage = String;
-    type OutgoingMessage = String;
-
-    async fn process_inbound(&self, ctx: &mut InboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>) -> Result<()> {
-        let processed_message = if let Some(msg) = ctx.message.take() {
-            format!("S2_IN:{}", msg)
-        } else {
-            return ctx.next().await; // Should not happen if previous middleware sets message
-        };
-
-        // Echo the fully inbound-processed message. This will go through the outbound pipeline.
-        if let Err(e) = ctx.send_message(processed_message.clone()) {
-            eprintln!("StageTwoEchoMiddleware: Failed to send echo: {:?}", e);
-            // Decide if error should halt further processing or be passed, e.g. by returning Err(e)
-        }
-
-        // Set the current inbound message for any potential subsequent *inbound* middleware (none in this example)
-        ctx.message = Some(processed_message);
-        ctx.next().await
-    }
-
-    async fn process_outbound(&self, ctx: &mut OutboundContext<'_, Self::State, Self::IncomingMessage, Self::OutgoingMessage>) -> Result<()> {
-        if let Some(msg) = ctx.message.take() { // Take ownership to modify
-            ctx.message = Some(format!("S2_OUT:{}", msg));
-        }
-        ctx.next().await
-    }
+// WebSocket handler
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(handler): State<Arc<WebSocketHandler>>,
+) -> impl IntoResponse {
+    let connection_id = uuid::Uuid::new_v4().to_string();
+    let cancellation_token = CancellationToken::new();
+    
+    handler.start_websocket(ws, connection_id, cancellation_token)
 }
 
-// Type alias for the WebSocketHandler
-type PipelineDemoHandler = WebSocketHandler<
-    Arc<MinimalState>,
+type WebSocketHandler = websocket_builder::WebSocketHandler<
+    Arc<AppState>,
     String,
     String,
     StringConverter,
-    MinimalStateFactory,
+    AppStateFactory,
 >;
-
-// 5. Build the WebSocket Handler with the middleware pipeline
-fn build_pipeline_handler() -> Arc<PipelineDemoHandler> {
-    Arc::new(
-        WebSocketBuilder::new(MinimalStateFactory, StringConverter)
-            .with_middleware(StageOneMiddleware)      // First in inbound, last in outbound
-            .with_middleware(StageTwoEchoMiddleware)  // Second in inbound, first in outbound (for its echo)
-            .with_max_connections(1000)               // Optional: limit concurrent connections
-            .with_max_connection_time(Duration::from_secs(3600)) // Optional: auto-close after 1 hour
-            .build(),
-    )
-}
-
-// 6. Axum Setup
-async fn ws_axum_handler(
-    ws: WebSocketUpgrade,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(handler): State<Arc<PipelineDemoHandler>>,
-) -> impl IntoResponse {
-    let conn_token = CancellationToken::new();
-    ws.on_upgrade(move |socket| async move {
-        println!("Client {} connected.", addr);
-        if let Err(e) = handler.start(socket, addr.to_string(), conn_token).await {
-            eprintln!("Handler error for {}: {:?}", addr, e);
-        }
-        println!("Client {} disconnected.", addr);
-    })
-}
 
 #[tokio::main]
 async fn main() {
-    let pipeline_handler = build_pipeline_handler();
+    let builder = WebSocketBuilder::new(AppStateFactory, StringConverter)
+        .with_middleware(EchoMiddleware);
+    
+    let handler = Arc::new(builder.build());
+
     let app = Router::new()
-        .route("/ws", get(ws_axum_handler))
-        .with_state(pipeline_handler);
+        .route("/ws", get(ws_handler))
+        .with_state(handler);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("Listening on ws://{}", addr);
-    println!("Send a message (e.g., \"hello\") to see the pipeline transformation.");
-    println!("Expected output for 'hello': S1_OUT:S2_OUT:S2_IN:S1_IN:hello");
-
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();
-}
-
-## Error Handling
-
-Errors are propagated through the middleware chain with state preservation:
-
-```rust
-pub enum WebsocketError<State> {
-    IoError(std::io::Error, State),
-    WebsocketError(axum::Error, State),
-    HandlerError(Box<dyn std::error::Error + Send + Sync>, State),
-    // ...
+    
+    println!("Server running on ws://127.0.0.1:3000/ws");
+    
+    axum::serve(listener, app).await.unwrap();
 }
 ```
+
+## Middleware System
+
+Middleware components process messages in a pipeline fashion:
+
+### Message Flow
+
+1. **Inbound**: Client → WebSocket → MessageConverter → Middleware Pipeline → Your Handler
+2. **Outbound**: Your Handler → Middleware Pipeline → MessageConverter → WebSocket → Client
+
+### Middleware Lifecycle
+
+```rust
+#[async_trait]
+impl Middleware for MyMiddleware {
+    // Called when connection is established
+    async fn on_connect(&self, ctx: &mut ConnectionContext<...>) -> Result<()> {
+        // Initialize connection-specific state
+        ctx.next().await
+    }
+
+    // Process incoming messages
+    async fn process_inbound(&self, ctx: &mut InboundContext<...>) -> Result<()> {
+        // Transform, filter, or handle messages
+        ctx.next().await
+    }
+
+    // Process outgoing messages
+    async fn process_outbound(&self, ctx: &mut OutboundContext<...>) -> Result<()> {
+        // Transform or filter outgoing messages
+        ctx.next().await
+    }
+
+    // Called when connection closes
+    async fn on_disconnect(&self, ctx: &mut DisconnectContext<...>) -> Result<()> {
+        // Cleanup
+        ctx.next().await
+    }
+}
+```
+
+## Connection Management
+
+The framework automatically handles:
+- Connection establishment and teardown
+- Graceful disconnection with customizable timeouts
+- Backpressure when clients can't keep up
+- Error propagation and connection cleanup
+
+### Configuration Options
+
+```rust
+let builder = WebSocketBuilder::new(state_factory, message_converter)
+    .with_middleware(middleware1)
+    .with_middleware(middleware2)
+    .with_channel_size(100)  // Channel buffer size
+    .with_max_connections(1000)  // Connection limit
+    .with_max_connection_time(Duration::from_secs(3600));  // Auto-disconnect after 1 hour
+```
+
+## Examples
+
+See the [examples](examples/) directory for:
+- `basic_demo.rs` - Simple echo server with middleware
+- `pipeline_demo.rs` - Complex middleware pipeline demonstration
+- `debug_ws.rs` - WebSocket debugging tool
+
+## Testing
+
+The library supports both unit and integration testing with mock WebSocket connections.
 
 ## Status
 
@@ -214,4 +231,3 @@ Early-stage project under active development. Breaking changes should be expecte
 ## License
 
 MIT
-

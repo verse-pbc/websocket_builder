@@ -5,7 +5,7 @@
 
 use crate::{
     split_actors::{process_on_connect, process_on_disconnect, SplitActors, SplitActorsConfig},
-    websocket_trait::{AxumWebSocket, WebSocketConnection},
+    websocket_trait::WebSocketConnection,
     MessageConverter, Middleware, StateFactory,
 };
 use anyhow::Result;
@@ -102,7 +102,7 @@ where
 
         // Try to acquire connection permit if max_connections is set
         let _permit = if let Some(semaphore) = &self.connection_semaphore {
-            match semaphore.clone().try_acquire_owned() {
+            match Arc::clone(semaphore).try_acquire_owned() {
                 Ok(permit) => Some(permit),
                 Err(_) => {
                     warn!("Maximum connections limit reached, rejecting connection");
@@ -276,44 +276,5 @@ where
             self.max_connections,
             self.max_connection_time,
         )
-    }
-}
-
-/// Extension trait to add convenience methods for axum WebSocket
-#[async_trait::async_trait]
-pub trait AxumWebSocketExt<S, I, O, C, F>
-where
-    S: Send + Sync + 'static,
-    I: Send + Sync + 'static,
-    O: Send + Sync + 'static,
-    C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
-{
-    /// Start handling an axum WebSocket connection
-    async fn start_axum(
-        &self,
-        socket: axum::extract::ws::WebSocket,
-        connection_id: String,
-        cancellation_token: CancellationToken,
-    ) -> anyhow::Result<()>;
-}
-
-#[async_trait::async_trait]
-impl<S, I, O, C, F> AxumWebSocketExt<S, I, O, C, F> for WebSocketHandler<S, I, O, C, F>
-where
-    S: Send + Sync + 'static,
-    I: Send + Sync + 'static,
-    O: Send + Sync + 'static,
-    C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
-{
-    async fn start_axum(
-        &self,
-        socket: axum::extract::ws::WebSocket,
-        connection_id: String,
-        cancellation_token: CancellationToken,
-    ) -> anyhow::Result<()> {
-        let axum_ws = AxumWebSocket::new(socket);
-        self.start(axum_ws, connection_id, cancellation_token).await
     }
 }

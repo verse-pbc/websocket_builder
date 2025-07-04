@@ -14,7 +14,7 @@
 //! ## Quick Example
 //!
 //! ```rust,no_run
-//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, StateFactory, MessageConverter, SendMessage};
+//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, StateFactory, StringConverter, SendMessage};
 //! use async_trait::async_trait;
 //! use anyhow::Result;
 //! use std::sync::Arc;
@@ -31,19 +31,6 @@
 //! impl StateFactory<Arc<MyState>> for MyStateFactory {
 //!     fn create_state(&self, _token: CancellationToken) -> Arc<MyState> {
 //!         Arc::new(MyState::default())
-//!     }
-//! }
-//!
-//! // Message converter for string messages
-//! #[derive(Clone, Debug)]
-//! struct StringConverter;
-//!
-//! impl MessageConverter<String, String> for StringConverter {
-//!     fn inbound_from_string(&self, payload: String) -> Result<Option<String>> {
-//!         Ok(Some(payload))
-//!     }
-//!     fn outbound_to_string(&self, payload: String) -> Result<String> {
-//!         Ok(payload)
 //!     }
 //! }
 //!
@@ -71,7 +58,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let builder = WebSocketBuilder::new(MyStateFactory, StringConverter)
+//!     let builder = WebSocketBuilder::new(MyStateFactory, StringConverter::new())
 //!         .with_middleware(EchoMiddleware);
 //!     
 //!     // Use with Axum or other web frameworks
@@ -120,18 +107,24 @@
 //! - State management
 //! - Custom protocols
 
+pub mod message_converter;
 pub mod middleware;
 pub mod middleware_context;
 mod split_actors; // Internal implementation detail
+pub mod unified;
 pub mod websocket_handler;
 pub mod websocket_trait;
 
+pub use message_converter::{JsonConverter, StringConverter};
 pub use middleware::Middleware;
 pub use middleware_context::{
     ConnectionContext, DisconnectContext, InboundContext, MessageConverter, MessageSender,
     MiddlewareVec, OutboundContext, SendMessage, SharedMiddlewareVec, StateFactory, WebsocketError,
 };
-pub use websocket_handler::{AxumWebSocketExt, WebSocketBuilder, WebSocketHandler};
+pub use unified::{UnifiedWebSocketExt, WebSocketUpgrade};
+pub use websocket_handler::{WebSocketBuilder, WebSocketHandler};
+#[cfg(feature = "fastwebsockets")]
+pub use websocket_trait::fast::{FastWebSocket, FastWsSink, FastWsStream};
 pub use websocket_trait::{
     AxumWebSocket, WebSocketConnection, WsError, WsMessage, WsSink, WsStream, WsStreamFuture,
 };

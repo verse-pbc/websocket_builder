@@ -1,118 +1,104 @@
+//! Pipeline demo showing middleware composition
+//!
+//! This example demonstrates how to build a middleware pipeline with multiple
+//! stages that process messages in sequence.
+
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::{
-    extract::{ws::WebSocketUpgrade, ConnectInfo, State},
+    extract::{ConnectInfo, State},
     response::IntoResponse,
     routing::get,
     Router,
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    AxumWebSocketExt, InboundContext, MessageConverter, Middleware, OutboundContext, SendMessage,
-    StateFactory, WebSocketBuilder, WebSocketHandler,
+    ConnectionContext, DisconnectContext, InboundContext, Middleware, OutboundContext, SendMessage,
+    StateFactory, StringConverter, UnifiedWebSocketExt, WebSocketBuilder, WebSocketUpgrade,
 };
 
-// 1. Minimal State (not actively used in transformation for this example)
-#[derive(Debug, Clone, Default)]
-pub struct MinimalState;
+// Application state with connection counter
+#[derive(Debug)]
+struct AppState {
+    total_connections: AtomicU64,
+}
 
-// 2. Minimal State Factory
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            total_connections: AtomicU64::new(0),
+        }
+    }
+}
+
+// State factory
 #[derive(Clone)]
-pub struct MinimalStateFactory;
+struct AppStateFactory;
 
-impl StateFactory<Arc<MinimalState>> for MinimalStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> Arc<MinimalState> {
-        Arc::new(MinimalState)
+impl StateFactory<Arc<AppState>> for AppStateFactory {
+    fn create_state(&self, _token: CancellationToken) -> Arc<AppState> {
+        Arc::new(AppState::default())
     }
 }
 
-// 3. Simple String Message Converter
-#[derive(Clone, Debug)]
-pub struct StringConverter;
+// Use the built-in StringConverter
 
-impl MessageConverter<String, String> for StringConverter {
-    fn inbound_from_string(&self, payload: String) -> Result<Option<String>> {
-        Ok(Some(payload))
-    }
-    fn outbound_to_string(&self, payload: String) -> Result<String> {
-        Ok(payload)
-    }
-}
-
-// 4. Middleware Stages
-
-// TrimMiddleware: Trims whitespace on inbound. Passes message through on outbound.
-#[derive(Debug, Clone)]
-pub struct TrimMiddleware;
+// Middleware 1: Connection tracking
+#[derive(Debug)]
+struct ConnectionTracker;
 
 #[async_trait]
-impl Middleware for TrimMiddleware {
-    type State = Arc<MinimalState>;
+impl Middleware for ConnectionTracker {
+    type State = Arc<AppState>;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
-    async fn process_inbound(
+    async fn on_connect(
         &self,
-        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+        ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        if let Some(msg) = ctx.message.take() {
-            ctx.message = Some(msg.trim().to_string());
-        }
-        ctx.next().await
-    }
-
-    async fn process_outbound(
-        &self,
-        ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
-    ) -> Result<()> {
-        // Just pass the message through, no prefix added.
-        // If ctx.message is None, it means a previous middleware consumed it or didn't set one,
-        // which is fine, next() will handle it.
-        // If Some(msg), it will be passed to the next outbound middleware or to the client.
-        ctx.next().await
-    }
-}
-
-// HelloEchoMiddleware: Prepends "Hello " on inbound (capitalizing name) and echoes. Appends emoji on outbound.
-#[derive(Debug, Clone)]
-pub struct HelloEchoMiddleware;
-
-#[async_trait]
-impl Middleware for HelloEchoMiddleware {
-    type State = Arc<MinimalState>;
-    type IncomingMessage = String;
-    type OutgoingMessage = String;
-
-    async fn process_inbound(
-        &self,
-        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
-    ) -> Result<()> {
-        let processed_message = if let Some(name) = ctx.message.take() {
-            // Name is already trimmed by TrimMiddleware
-            if name.is_empty() {
-                "Hello ".to_string()
-            } else {
-                let mut chars = name.chars();
-                match chars.next() {
-                    None => "Hello ".to_string(), // Should not happen if !name.is_empty()
-                    Some(f) => format!(
-                        "Hello {}",
-                        f.to_uppercase().collect::<String>() + chars.as_str()
-                    ),
-                }
-            }
-        } else {
-            return ctx.next().await; // Should not happen if previous middleware sets message
+        let count = {
+            let state = ctx.state.read();
+            state.total_connections.fetch_add(1, Ordering::Relaxed)
         };
+        println!(
+            "[ConnectionTracker] Connection established. Total: {}",
+            count + 1
+        );
+        ctx.send_message(format!("Welcome! You are connection #{}", count + 1))?;
+        ctx.next().await
+    }
 
-        // Echo the fully inbound-processed message. This will go through the outbound pipeline.
-        if let Err(e) = ctx.send_message(processed_message.clone()) {
-            eprintln!("HelloEchoMiddleware: Failed to send echo: {e:?}");
+    async fn on_disconnect(
+        &self,
+        ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    ) -> Result<()> {
+        println!("[ConnectionTracker] Connection closed");
+        ctx.next().await
+    }
+}
+
+// Middleware 2: Logging
+#[derive(Debug)]
+struct LoggingMiddleware;
+
+#[async_trait]
+impl Middleware for LoggingMiddleware {
+    type State = Arc<AppState>;
+    type IncomingMessage = String;
+    type OutgoingMessage = String;
+
+    async fn process_inbound(
+        &self,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    ) -> Result<()> {
+        if let Some(msg) = &ctx.message {
+            println!("[LoggingMiddleware] Received: {msg}");
         }
-
-        // Set the current inbound message for any potential subsequent *inbound* middleware (none in this example)
-        ctx.message = Some(processed_message);
         ctx.next().await
     }
 
@@ -120,62 +106,124 @@ impl Middleware for HelloEchoMiddleware {
         &self,
         ctx: &mut OutboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        if let Some(msg) = ctx.message.take() {
-            ctx.message = Some(format!("{msg} 👋"));
+        println!("[LoggingMiddleware] Sending: {:?}", ctx.message);
+        ctx.next().await
+    }
+}
+
+// Middleware 3: Echo with transformation
+#[derive(Debug)]
+struct TransformEchoMiddleware;
+
+#[async_trait]
+impl Middleware for TransformEchoMiddleware {
+    type State = Arc<AppState>;
+    type IncomingMessage = String;
+    type OutgoingMessage = String;
+
+    async fn process_inbound(
+        &self,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    ) -> Result<()> {
+        if let Some(message) = &ctx.message {
+            let response = format!("Echo: {}", message.to_uppercase());
+            ctx.send_message(response)?;
         }
         ctx.next().await
     }
 }
 
-// Type alias for the WebSocketHandler
-type PipelineDemoHandler =
-    WebSocketHandler<Arc<MinimalState>, String, String, StringConverter, MinimalStateFactory>;
-
-// 5. Build the WebSocket Handler with the middleware pipeline
-fn build_pipeline_handler() -> Arc<PipelineDemoHandler> {
-    Arc::new(
-        WebSocketBuilder::new(MinimalStateFactory, StringConverter)
-            .with_middleware(TrimMiddleware) // First in inbound, last in outbound
-            .with_middleware(HelloEchoMiddleware) // Second in inbound, first in outbound (for its echo)
-            .build(),
-    )
+// Middleware 4: Message stats
+#[derive(Debug, Default)]
+struct StatsMiddleware {
+    message_count: AtomicU64,
 }
 
-// 6. Axum Setup
-async fn ws_axum_handler(
-    ws: WebSocketUpgrade,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(handler): State<Arc<PipelineDemoHandler>>,
-) -> impl IntoResponse {
-    let conn_token = CancellationToken::new();
-    ws.on_upgrade(move |socket| async move {
-        println!("Client {addr} connected.");
-        if let Err(e) = handler
-            .start_axum(socket, addr.to_string(), conn_token)
-            .await
-        {
-            eprintln!("Handler error for {addr}: {e:?}");
+#[async_trait]
+impl Middleware for StatsMiddleware {
+    type State = Arc<AppState>;
+    type IncomingMessage = String;
+    type OutgoingMessage = String;
+
+    async fn process_inbound(
+        &self,
+        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+    ) -> Result<()> {
+        let count = self.message_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+        if let Some(message) = &ctx.message {
+            if message == "stats" {
+                ctx.send_message(format!("Total messages processed: {count}"))?;
+                return Ok(()); // Don't process further
+            }
         }
-        println!("Client {addr} disconnected.");
-    })
+
+        ctx.next().await
+    }
 }
+
+// WebSocket handler
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    State(handler): State<Arc<WebSocketHandler>>,
+) -> impl IntoResponse {
+    let connection_id = addr.to_string(); // Use actual IP:port
+    let cancellation_token = CancellationToken::new();
+
+    println!("New WebSocket connection from: {connection_id}");
+
+    handler
+        .handle_upgrade(ws, connection_id, cancellation_token)
+        .await
+}
+
+type WebSocketHandler = websocket_builder::WebSocketHandler<
+    Arc<AppState>,
+    String,
+    String,
+    StringConverter,
+    AppStateFactory,
+>;
 
 #[tokio::main]
-async fn main() {
-    let pipeline_handler = build_pipeline_handler();
+async fn main() -> Result<()> {
+    // Build the middleware pipeline
+    let builder = WebSocketBuilder::new(AppStateFactory, StringConverter::new())
+        .with_middleware(ConnectionTracker)
+        .with_middleware(LoggingMiddleware)
+        .with_middleware(TransformEchoMiddleware)
+        .with_middleware(StatsMiddleware::default());
+
+    let handler = Arc::new(builder.build());
+
+    // Create the Axum app
     let app = Router::new()
-        .route("/ws", get(ws_axum_handler))
-        .with_state(pipeline_handler);
+        .route("/ws", get(ws_handler))
+        .with_state(handler);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("Listening on ws://{addr}");
-    println!("Run: websocat ws://127.0.0.1:3000/ws  # Then send: '  daniel  '  (expect: Hello Daniel 👋)");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3002")
+        .await
+        .unwrap();
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    println!("\n📡 Server running on http://127.0.0.1:3002");
+    println!("🔌 WebSocket endpoint: ws://127.0.0.1:3002/ws");
+    println!("\n📝 Middleware pipeline:");
+    println!("   1. ConnectionTracker - Tracks connections");
+    println!("   2. LoggingMiddleware - Logs all messages");
+    println!("   3. TransformEchoMiddleware - Echoes messages in uppercase");
+    println!("   4. StatsMiddleware - Responds to 'stats' command");
+    println!("\n🧪 Test with: websocat ws://127.0.0.1:3002/ws");
+    println!("   - Send any message to see it echoed in uppercase");
+    println!("   - Send 'stats' to see message count");
+    println!("   - Watch the console for middleware logs\n");
+
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await
     .unwrap();
+
+    Ok(())
 }

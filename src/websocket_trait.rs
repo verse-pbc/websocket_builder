@@ -85,19 +85,19 @@ impl WebSocketConnection for AxumWebSocket {
 impl WsSink for AxumWsSink {
     async fn send(&mut self, msg: WsMessage) -> Result<(), WsError> {
         let axum_msg = match msg {
-            WsMessage::Text(text) => axum::extract::ws::Message::Text(text),
-            WsMessage::Binary(data) => axum::extract::ws::Message::Binary(data),
+            WsMessage::Text(text) => axum::extract::ws::Message::Text(text.into()),
+            WsMessage::Binary(data) => axum::extract::ws::Message::Binary(data.into()),
             WsMessage::Close(reason) => match reason {
                 Some((code, reason)) => {
                     axum::extract::ws::Message::Close(Some(axum::extract::ws::CloseFrame {
                         code,
-                        reason: std::borrow::Cow::Owned(reason),
+                        reason: reason.into(),
                     }))
                 }
                 None => axum::extract::ws::Message::Close(None),
             },
-            WsMessage::Ping(data) => axum::extract::ws::Message::Ping(data),
-            WsMessage::Pong(data) => axum::extract::ws::Message::Pong(data),
+            WsMessage::Ping(data) => axum::extract::ws::Message::Ping(data.into()),
+            WsMessage::Pong(data) => axum::extract::ws::Message::Pong(data.into()),
         };
 
         self.sink
@@ -113,14 +113,18 @@ impl WsStream for AxumWsStream {
             match self.stream.next().await {
                 Some(Ok(msg)) => {
                     let ws_msg = match msg {
-                        axum::extract::ws::Message::Text(text) => WsMessage::Text(text),
-                        axum::extract::ws::Message::Binary(data) => WsMessage::Binary(data),
+                        axum::extract::ws::Message::Text(text) => {
+                            WsMessage::Text(text.as_str().to_owned())
+                        }
+                        axum::extract::ws::Message::Binary(data) => {
+                            WsMessage::Binary(data.to_vec())
+                        }
                         axum::extract::ws::Message::Close(frame) => {
-                            let reason = frame.map(|f| (f.code, f.reason.to_string()));
+                            let reason = frame.map(|f| (f.code, f.reason.as_str().to_owned()));
                             WsMessage::Close(reason)
                         }
-                        axum::extract::ws::Message::Ping(data) => WsMessage::Ping(data),
-                        axum::extract::ws::Message::Pong(data) => WsMessage::Pong(data),
+                        axum::extract::ws::Message::Ping(data) => WsMessage::Ping(data.to_vec()),
+                        axum::extract::ws::Message::Pong(data) => WsMessage::Pong(data.to_vec()),
                     };
                     Some(Ok(ws_msg))
                 }
@@ -128,6 +132,140 @@ impl WsStream for AxumWsStream {
                 None => None,
             }
         })
+    }
+}
+
+/// FastWebSocket implementation
+#[cfg(feature = "fastwebsockets")]
+pub mod fast {
+    use super::*;
+    use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, WebSocketError, WebSocketWrite};
+    use tokio::io::{AsyncRead, AsyncWrite};
+
+    /// FastWebSocket wrapper that implements WebSocketConnection
+    pub struct FastWebSocket<S>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        ws: fastwebsockets::WebSocket<S>,
+    }
+
+    impl<S> FastWebSocket<S>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        pub fn new(ws: fastwebsockets::WebSocket<S>) -> Self {
+            Self { ws }
+        }
+    }
+
+    /// FastWebSocket sink wrapper
+    pub struct FastWsSink<W>
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        writer: WebSocketWrite<W>,
+    }
+
+    /// FastWebSocket stream wrapper - contains the read half
+    pub struct FastWsStream<S>
+    where
+        S: AsyncRead + Unpin + Send + 'static,
+    {
+        reader: FragmentCollectorRead<S>,
+    }
+
+    impl<S> WebSocketConnection for FastWebSocket<S>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        type Sink = FastWsSink<tokio::io::WriteHalf<S>>;
+        type Stream = FastWsStream<tokio::io::ReadHalf<S>>;
+
+        fn split(self) -> (Self::Sink, Self::Stream) {
+            // Use tokio::io::split to split the underlying stream
+            let (ws_read, ws_write) = self.ws.split(tokio::io::split);
+
+            (
+                FastWsSink { writer: ws_write },
+                FastWsStream {
+                    reader: FragmentCollectorRead::new(ws_read),
+                },
+            )
+        }
+    }
+
+    #[async_trait]
+    impl<W> WsSink for FastWsSink<W>
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        async fn send(&mut self, msg: WsMessage) -> Result<(), WsError> {
+            let frame = match msg {
+                WsMessage::Text(text) => Frame::text(text.into_bytes().into()),
+                WsMessage::Binary(data) => Frame::binary(data.into()),
+                WsMessage::Close(reason) => match reason {
+                    Some((code, reason)) => Frame::close(code, reason.as_bytes()),
+                    None => Frame::close(1000, &[]),
+                },
+                WsMessage::Ping(data) => Frame::new(true, OpCode::Ping, None, data.into()),
+                WsMessage::Pong(data) => Frame::pong(data.into()),
+            };
+
+            self.writer
+                .write_frame(frame)
+                .await
+                .map_err(|e| WsError::WebSocket(e.to_string()))
+        }
+    }
+
+    impl<S> WsStream for FastWsStream<S>
+    where
+        S: AsyncRead + Unpin + Send + 'static,
+    {
+        fn next(&mut self) -> WsStreamFuture<'_> {
+            Box::pin(async move {
+                // FragmentCollectorRead requires a send function for obligated writes (pong/close)
+                // Since we can't send from the read side, we'll use an empty closure
+                match self
+                    .reader
+                    .read_frame(&mut |_frame| async { Ok::<(), WsError>(()) })
+                    .await
+                {
+                    Ok(frame) => {
+                        let ws_msg = match frame.opcode {
+                            OpCode::Text => {
+                                let text = String::from_utf8_lossy(&frame.payload).into_owned();
+                                WsMessage::Text(text)
+                            }
+                            OpCode::Binary => WsMessage::Binary(frame.payload.to_vec()),
+                            OpCode::Close => {
+                                if frame.payload.len() >= 2 {
+                                    let code =
+                                        u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
+                                    let reason =
+                                        String::from_utf8_lossy(&frame.payload[2..]).into_owned();
+                                    WsMessage::Close(Some((code, reason)))
+                                } else {
+                                    WsMessage::Close(None)
+                                }
+                            }
+                            OpCode::Ping => WsMessage::Ping(frame.payload.to_vec()),
+                            OpCode::Pong => WsMessage::Pong(frame.payload.to_vec()),
+                            OpCode::Continuation => {
+                                // This shouldn't happen with FragmentCollectorRead
+                                return Some(Err(WsError::WebSocket(
+                                    "Unexpected continuation frame".to_string(),
+                                )));
+                            }
+                        };
+                        Some(Ok(ws_msg))
+                    }
+                    Err(WebSocketError::ConnectionClosed) => None,
+                    Err(e) => Some(Err(WsError::WebSocket(e.to_string()))),
+                }
+            })
+        }
     }
 }
 
