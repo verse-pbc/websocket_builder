@@ -4,10 +4,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use websocket_builder::{
     ConnectionContext, DisconnectContext, InboundContext, MessageConverter, Middleware,
-    OutboundContext, SendMessage, StateFactory, WebSocketBuilder,
+    OutboundContext, SendMessage, WebSocketBuilder,
 };
 
 // Simple test state
@@ -15,6 +14,12 @@ use websocket_builder::{
 struct TestState {
     counter: Arc<AtomicUsize>,
     messages: Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+impl Default for TestState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestState {
@@ -55,15 +60,7 @@ impl MessageConverter<String, String> for TestConverter {
     }
 }
 
-// State factory
-#[derive(Clone)]
-struct TestStateFactory;
-
-impl StateFactory<TestState> for TestStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> TestState {
-        TestState::new()
-    }
-}
+// No longer need StateFactory - state is created directly
 
 // Test middleware that increments counter
 #[derive(Debug, Clone)]
@@ -146,7 +143,7 @@ impl Middleware for EchoMiddleware {
 
 #[tokio::test]
 async fn test_actor_handler_creation() {
-    let _handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+    let _handler = WebSocketBuilder::<TestState, String, String, TestConverter>::new(TestConverter)
         .with_middleware(CounterMiddleware)
         .build();
 
@@ -156,7 +153,7 @@ async fn test_actor_handler_creation() {
 
 #[tokio::test]
 async fn test_builder_with_multiple_middlewares() {
-    let _handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+    let _handler = WebSocketBuilder::<TestState, String, String, TestConverter>::new(TestConverter)
         .with_middleware(CounterMiddleware)
         .with_middleware(EchoMiddleware)
         .with_channel_size(50)
@@ -177,13 +174,10 @@ async fn test_middleware_trait_implementation() {
 }
 
 #[tokio::test]
-async fn test_state_factory() {
-    let factory = TestStateFactory;
-    let token = CancellationToken::new();
-
-    // Create multiple states
-    let state1 = factory.create_state(token.clone());
-    let state2 = factory.create_state(token.clone());
+async fn test_state_creation() {
+    // Create multiple states directly
+    let state1 = TestState::new();
+    let state2 = TestState::new();
 
     // Each state should be independent
     state1.increment();
@@ -244,7 +238,7 @@ impl Middleware for PrefixMiddleware {
 #[tokio::test]
 async fn test_middleware_ordering() {
     // Create handler with multiple prefix middlewares
-    let _handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+    let _handler = WebSocketBuilder::<TestState, String, String, TestConverter>::new(TestConverter)
         .with_middleware(PrefixMiddleware("First"))
         .with_middleware(PrefixMiddleware("Second"))
         .with_middleware(PrefixMiddleware("Third"))
@@ -257,7 +251,7 @@ async fn test_middleware_ordering() {
 
 #[test]
 fn test_max_connections_configuration() {
-    let handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+    let handler = WebSocketBuilder::<TestState, String, String, TestConverter>::new(TestConverter)
         .with_max_connections(100)
         .build();
 
@@ -269,7 +263,7 @@ fn test_max_connections_configuration() {
 fn test_max_connection_time_configuration() {
     use std::time::Duration;
 
-    let handler = WebSocketBuilder::new(TestStateFactory, TestConverter)
+    let handler = WebSocketBuilder::<TestState, String, String, TestConverter>::new(TestConverter)
         .with_max_connection_time(Duration::from_secs(3600)) // 1 hour
         .build();
 

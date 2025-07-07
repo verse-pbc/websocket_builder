@@ -1,23 +1,13 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, MessageConverter, Middleware, SendMessage, StateFactory, WebSocketBuilder,
+    InboundContext, MessageConverter, Middleware, SendMessage, WebSocketBuilder,
 };
 
 // Simple state
 #[derive(Debug, Clone, Default)]
 struct BenchState;
-
-#[derive(Clone)]
-struct BenchStateFactory;
-
-impl StateFactory<Arc<BenchState>> for BenchStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> Arc<BenchState> {
-        Arc::new(BenchState)
-    }
-}
 
 // Message converter
 #[derive(Clone, Debug)]
@@ -48,7 +38,7 @@ struct EchoMiddleware;
 
 #[async_trait::async_trait]
 impl Middleware for EchoMiddleware {
-    type State = Arc<BenchState>;
+    type State = BenchState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -66,7 +56,7 @@ impl Middleware for EchoMiddleware {
 fn bench_handler_creation(c: &mut Criterion) {
     c.bench_function("create_handler", |b| {
         b.iter(|| {
-            WebSocketBuilder::new(BenchStateFactory, StringConverter)
+            WebSocketBuilder::new(StringConverter)
                 .with_middleware(EchoMiddleware)
                 .with_channel_size(100)
                 .build()
@@ -80,7 +70,7 @@ fn bench_middleware_chain(c: &mut Criterion) {
     for count in [1, 3, 5].iter() {
         group.bench_with_input(format!("{count}_middlewares"), count, |b, &count| {
             b.iter(|| {
-                let mut builder = WebSocketBuilder::new(BenchStateFactory, StringConverter);
+                let mut builder = WebSocketBuilder::new(StringConverter);
                 for _ in 0..count {
                     builder = builder.with_middleware(EchoMiddleware);
                 }
@@ -102,7 +92,7 @@ fn bench_concurrent_handlers(c: &mut Criterion) {
                 let handlers: Vec<_> = (0..count)
                     .map(|_| {
                         Arc::new(
-                            WebSocketBuilder::new(BenchStateFactory, StringConverter)
+                            WebSocketBuilder::new(StringConverter)
                                 .with_middleware(EchoMiddleware)
                                 .with_channel_size(50)
                                 .build(),

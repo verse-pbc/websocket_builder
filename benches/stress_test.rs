@@ -3,23 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, MessageConverter, Middleware, SendMessage, StateFactory, WebSocketBuilder,
+    InboundContext, MessageConverter, Middleware, SendMessage, WebSocketBuilder,
 };
 
 // Simple state for benchmarking
 #[derive(Debug, Clone, Default)]
 struct BenchState;
-
-#[derive(Clone)]
-struct BenchStateFactory;
-
-impl StateFactory<Arc<BenchState>> for BenchStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> Arc<BenchState> {
-        Arc::new(BenchState)
-    }
-}
 
 // Message converter for strings
 #[derive(Clone, Debug)]
@@ -50,7 +40,7 @@ struct ThroughputMiddleware;
 
 #[async_trait::async_trait]
 impl Middleware for ThroughputMiddleware {
-    type State = Arc<BenchState>;
+    type State = BenchState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -73,7 +63,7 @@ fn bench_high_throughput_single_connection(c: &mut Criterion) {
     c.bench_function("high_throughput_single_connection", |b| {
         b.to_async(&rt).iter(|| async {
             let _handler = Arc::new(
-                WebSocketBuilder::new(BenchStateFactory, StringConverter)
+                WebSocketBuilder::new(StringConverter)
                     .with_middleware(ThroughputMiddleware)
                     .with_channel_size(10000) // Large buffer for high throughput
                     .build(),
@@ -109,7 +99,7 @@ fn bench_many_concurrent_connections(c: &mut Criterion) {
 
             for _ in 0..connection_count {
                 let handler = Arc::new(
-                    WebSocketBuilder::new(BenchStateFactory, StringConverter)
+                    WebSocketBuilder::new(StringConverter)
                         .with_middleware(ThroughputMiddleware)
                         .with_channel_size(100) // Smaller buffer per connection
                         .build(),
@@ -137,7 +127,7 @@ fn bench_async_message_processing(c: &mut Criterion) {
     c.bench_function("async_message_processing", |b| {
         b.to_async(&rt).iter(|| async {
             let handler = Arc::new(
-                WebSocketBuilder::new(BenchStateFactory, StringConverter)
+                WebSocketBuilder::new(StringConverter)
                     .with_middleware(ThroughputMiddleware)
                     .with_channel_size(5000)
                     .build(),
@@ -178,7 +168,7 @@ fn bench_connection_churn(c: &mut Criterion) {
                 let mut handlers = Vec::new();
                 for _ in 0..connections_per_cycle {
                     let handler = Arc::new(
-                        WebSocketBuilder::new(BenchStateFactory, StringConverter)
+                        WebSocketBuilder::new(StringConverter)
                             .with_middleware(ThroughputMiddleware)
                             .with_channel_size(50)
                             .build(),

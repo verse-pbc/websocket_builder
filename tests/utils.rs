@@ -14,8 +14,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use websocket_builder::{
-    MessageConverter, StateFactory, UnifiedWebSocketExt, WebSocketHandler,
-    WebSocketUpgrade as WsUpgrade,
+    MessageConverter, UnifiedWebSocketExt, WebSocketHandler, WebSocketUpgrade as WsUpgrade,
 };
 
 #[cfg(test)]
@@ -49,30 +48,30 @@ pub async fn assert_proxy_response(
 
 #[cfg(test)]
 #[derive(Clone)]
-pub struct TestServer<T, I, O, Converter, Factory>
+pub struct TestServer<T, I, O, Converter>
 where
-    T: Send + Sync + Clone + 'static,
+    T: Send + Sync + Clone + 'static + Default,
     I: Send + Sync + Clone + 'static,
     O: Send + Sync + Clone + 'static,
     Converter: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    Factory: StateFactory<T> + Send + Sync + Clone + 'static,
 {
-    ws_handler: WebSocketHandler<T, I, O, Converter, Factory>,
+    ws_handler: WebSocketHandler<T, I, O, Converter>,
     shutdown: CancellationToken,
+    state: T,
 }
 
 #[cfg(test)]
-impl<T, I, O, Converter, Factory> TestServer<T, I, O, Converter, Factory>
+impl<T, I, O, Converter> TestServer<T, I, O, Converter>
 where
-    T: Send + Sync + Clone + 'static,
+    T: Send + Sync + Clone + 'static + Default,
     I: Send + Sync + Clone + 'static,
     O: Send + Sync + Clone + 'static,
     Converter: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    Factory: StateFactory<T> + Send + Sync + Clone + 'static,
 {
     pub async fn start(
         addr: impl Into<String>,
-        ws_handler: WebSocketHandler<T, I, O, Converter, Factory>,
+        ws_handler: WebSocketHandler<T, I, O, Converter>,
+        state: T,
     ) -> Result<Self> {
         let addr = addr.into();
         let listener = TcpListener::bind(&addr).await?;
@@ -80,6 +79,7 @@ where
         let server = Self {
             ws_handler,
             shutdown: shutdown.clone(),
+            state: state.clone(),
         };
 
         let server_state = Arc::new(server.clone());
@@ -92,9 +92,10 @@ where
                     let state = Arc::clone(&server_state_clone);
                     let addr = addr.clone();
                     let ws_handler = Arc::new(state.ws_handler.clone());
+                    let conn_state = state.state.clone();
                     async move {
                         ws_handler
-                            .handle_upgrade(ws, addr.clone(), state.shutdown.clone())
+                            .handle_upgrade(ws, addr.clone(), state.shutdown.clone(), conn_state)
                             .await
                     }
                 }),
@@ -118,21 +119,15 @@ where
 #[allow(dead_code)]
 /// Creates a test server with a dynamically assigned port.
 /// Returns the server instance and the assigned address.
-pub async fn create_test_server<T, I, O, Converter, TestStateFactory>(
-    ws_handler: WebSocketHandler<T, I, O, Converter, TestStateFactory>,
-) -> Result<
-    (
-        TestServer<T, I, O, Converter, TestStateFactory>,
-        std::net::SocketAddr,
-    ),
-    anyhow::Error,
->
+pub async fn create_test_server<T, I, O, Converter>(
+    ws_handler: WebSocketHandler<T, I, O, Converter>,
+    state: T,
+) -> Result<(TestServer<T, I, O, Converter>, std::net::SocketAddr), anyhow::Error>
 where
-    T: Send + Sync + Clone + 'static + std::fmt::Debug,
+    T: Send + Sync + Clone + 'static + std::fmt::Debug + Default,
     I: Send + Sync + Clone + 'static,
     O: Send + Sync + Clone + 'static,
     Converter: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    TestStateFactory: StateFactory<T> + Send + Sync + Clone + 'static,
 {
     // Create a socket with port 0 to let the OS assign a random available port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -141,7 +136,7 @@ where
 
     println!("Using dynamically assigned port: {}", addr.port());
 
-    let server = TestServer::start(addr.to_string(), ws_handler).await?;
+    let server = TestServer::start(addr.to_string(), ws_handler, state).await?;
 
     // Wait a bit for the server to be ready
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

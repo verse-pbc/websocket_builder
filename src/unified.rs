@@ -3,7 +3,7 @@
 //! This module provides a consistent interface regardless of which WebSocket
 //! implementation is being used.
 
-use crate::{MessageConverter, StateFactory, WebSocketHandler};
+use crate::{MessageConverter, WebSocketHandler};
 use axum::{
     extract::{FromRequestParts, OptionalFromRequestParts},
     http::request::Parts,
@@ -77,18 +77,18 @@ where
 
 impl WebSocketUpgrade {
     /// Perform the WebSocket upgrade with a handler
-    pub async fn on_upgrade<S, I, O, C, F>(
+    pub async fn on_upgrade_with_state<S, I, O, C>(
         self,
-        handler: Arc<WebSocketHandler<S, I, O, C, F>>,
+        handler: Arc<WebSocketHandler<S, I, O, C>>,
         connection_id: String,
         cancellation_token: CancellationToken,
+        state: S,
     ) -> Response
     where
-        S: Send + Sync + 'static,
+        S: Send + Sync + 'static + Default,
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
         C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-        F: StateFactory<S> + Send + Sync + Clone + 'static,
     {
         #[cfg(feature = "tungstenite")]
         {
@@ -98,7 +98,7 @@ impl WebSocketUpgrade {
                 .on_upgrade(move |socket| async move {
                     let axum_ws = AxumWebSocket::new(socket);
                     if let Err(e) = handler
-                        .start(axum_ws, connection_id, cancellation_token)
+                        .start(axum_ws, connection_id, cancellation_token, state)
                         .await
                     {
                         tracing::error!("WebSocket handler error: {e:?}");
@@ -118,7 +118,7 @@ impl WebSocketUpgrade {
                     Ok(ws) => {
                         let fast_ws = FastWebSocket::new(ws);
                         if let Err(e) = handler
-                            .start(fast_ws, connection_id, cancellation_token)
+                            .start(fast_ws, connection_id, cancellation_token, state)
                             .await
                         {
                             tracing::error!("WebSocket handler error: {e:?}");
@@ -135,13 +135,12 @@ impl WebSocketUpgrade {
 
 /// Extension trait for WebSocketHandler to provide a unified API
 #[async_trait::async_trait]
-pub trait UnifiedWebSocketExt<S, I, O, C, F>
+pub trait UnifiedWebSocketExt<S, I, O, C>
 where
     S: Send + Sync + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
     /// Handle WebSocket upgrade and return a response
     async fn handle_upgrade(
@@ -149,24 +148,26 @@ where
         ws: WebSocketUpgrade,
         connection_id: String,
         cancellation_token: CancellationToken,
+        state: S,
     ) -> Response;
 }
 
 #[async_trait::async_trait]
-impl<S, I, O, C, F> UnifiedWebSocketExt<S, I, O, C, F> for WebSocketHandler<S, I, O, C, F>
+impl<S, I, O, C> UnifiedWebSocketExt<S, I, O, C> for WebSocketHandler<S, I, O, C>
 where
-    S: Send + Sync + 'static,
+    S: Send + Sync + 'static + Default,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
     async fn handle_upgrade(
         self: Arc<Self>,
         ws: WebSocketUpgrade,
         connection_id: String,
         cancellation_token: CancellationToken,
+        state: S,
     ) -> Response {
-        ws.on_upgrade(self, connection_id, cancellation_token).await
+        ws.on_upgrade_with_state(self, connection_id, cancellation_token, state)
+            .await
     }
 }

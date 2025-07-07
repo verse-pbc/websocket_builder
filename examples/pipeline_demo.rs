@@ -18,32 +18,28 @@ use std::sync::{
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
     ConnectionContext, DisconnectContext, InboundContext, Middleware, OutboundContext, SendMessage,
-    StateFactory, StringConverter, UnifiedWebSocketExt, WebSocketBuilder, WebSocketUpgrade,
+    StringConverter, UnifiedWebSocketExt, WebSocketBuilder, WebSocketUpgrade,
 };
 
-// Application state with connection counter
-#[derive(Debug)]
-struct AppState {
-    total_connections: AtomicU64,
+// Per-connection state that tracks connection metadata
+#[derive(Debug, Clone)]
+struct ConnectionState {
+    connection_id: String,
+    connection_number: u64,
+    connected_at: std::time::Instant,
 }
 
-impl Default for AppState {
+impl Default for ConnectionState {
     fn default() -> Self {
         Self {
-            total_connections: AtomicU64::new(0),
+            connection_id: String::new(),
+            connection_number: 0,
+            connected_at: std::time::Instant::now(),
         }
     }
 }
 
-// State factory
-#[derive(Clone)]
-struct AppStateFactory;
-
-impl StateFactory<Arc<AppState>> for AppStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> Arc<AppState> {
-        Arc::new(AppState::default())
-    }
-}
+// No longer need StateFactory - state is created directly
 
 // Use the built-in StringConverter
 
@@ -53,7 +49,7 @@ struct ConnectionTracker;
 
 #[async_trait]
 impl Middleware for ConnectionTracker {
-    type State = Arc<AppState>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -61,15 +57,15 @@ impl Middleware for ConnectionTracker {
         &self,
         ctx: &mut ConnectionContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        let count = {
+        let (connection_number, connection_id) = {
             let state = ctx.state.read();
-            state.total_connections.fetch_add(1, Ordering::Relaxed)
+            (state.connection_number, state.connection_id.clone())
         };
         println!(
-            "[ConnectionTracker] Connection established. Total: {}",
-            count + 1
+            "[ConnectionTracker] Connection #{} established from {}",
+            connection_number, connection_id
         );
-        ctx.send_message(format!("Welcome! You are connection #{}", count + 1))?;
+        ctx.send_message(format!("Welcome! You are connection #{connection_number}"))?;
         ctx.next().await
     }
 
@@ -77,7 +73,14 @@ impl Middleware for ConnectionTracker {
         &self,
         ctx: &mut DisconnectContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        println!("[ConnectionTracker] Connection closed");
+        let (connection_number, duration) = {
+            let state = ctx.state.read();
+            (state.connection_number, state.connected_at.elapsed())
+        };
+        println!(
+            "[ConnectionTracker] Connection #{} closed after {:?}",
+            connection_number, duration
+        );
         ctx.next().await
     }
 }
@@ -88,7 +91,7 @@ struct LoggingMiddleware;
 
 #[async_trait]
 impl Middleware for LoggingMiddleware {
-    type State = Arc<AppState>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -117,7 +120,7 @@ struct TransformEchoMiddleware;
 
 #[async_trait]
 impl Middleware for TransformEchoMiddleware {
-    type State = Arc<AppState>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -126,7 +129,7 @@ impl Middleware for TransformEchoMiddleware {
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
         if let Some(message) = &ctx.message {
-            let response = format!("Echo: {}", message.to_uppercase());
+            let response = format!("Echo: {}", message.trim().to_uppercase());
             ctx.send_message(response)?;
         }
         ctx.next().await
@@ -141,7 +144,7 @@ struct StatsMiddleware {
 
 #[async_trait]
 impl Middleware for StatsMiddleware {
-    type State = Arc<AppState>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -152,7 +155,7 @@ impl Middleware for StatsMiddleware {
         let count = self.message_count.fetch_add(1, Ordering::Relaxed) + 1;
 
         if let Some(message) = &ctx.message {
-            if message == "stats" {
+            if message.trim() == "stats" {
                 ctx.send_message(format!("Total messages processed: {count}"))?;
                 return Ok(()); // Don't process further
             }
@@ -173,23 +176,28 @@ async fn ws_handler(
 
     println!("New WebSocket connection from: {connection_id}");
 
+    // Get a unique connection number (in real app, use proper counter)
+    static CONNECTION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let connection_number =
+        CONNECTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
+    let state = ConnectionState {
+        connection_id: connection_id.clone(),
+        connection_number,
+        connected_at: std::time::Instant::now(),
+    };
     handler
-        .handle_upgrade(ws, connection_id, cancellation_token)
+        .handle_upgrade(ws, connection_id, cancellation_token, state)
         .await
 }
 
-type WebSocketHandler = websocket_builder::WebSocketHandler<
-    Arc<AppState>,
-    String,
-    String,
-    StringConverter,
-    AppStateFactory,
->;
+type WebSocketHandler =
+    websocket_builder::WebSocketHandler<ConnectionState, String, String, StringConverter>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Build the middleware pipeline
-    let builder = WebSocketBuilder::new(AppStateFactory, StringConverter::new())
+    let builder = WebSocketBuilder::new(StringConverter::new())
         .with_middleware(ConnectionTracker)
         .with_middleware(LoggingMiddleware)
         .with_middleware(TransformEchoMiddleware)

@@ -14,25 +14,15 @@
 //! ## Quick Example
 //!
 //! ```rust,no_run
-//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, StateFactory, StringConverter, SendMessage};
+//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, StringConverter, SendMessage};
 //! use async_trait::async_trait;
 //! use anyhow::Result;
 //! use std::sync::Arc;
-//! use tokio_util::sync::CancellationToken;
 //!
 //! // Define a simple state type
 //! #[derive(Debug, Clone, Default)]
 //! struct MyState;
 //!
-//! // State factory to create state instances
-//! #[derive(Clone)]
-//! struct MyStateFactory;
-//!
-//! impl StateFactory<Arc<MyState>> for MyStateFactory {
-//!     fn create_state(&self, _token: CancellationToken) -> Arc<MyState> {
-//!         Arc::new(MyState::default())
-//!     }
-//! }
 //!
 //! // Echo middleware that sends messages back
 //! #[derive(Debug)]
@@ -58,7 +48,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let builder = WebSocketBuilder::new(MyStateFactory, StringConverter::new())
+//!     let builder = WebSocketBuilder::<Arc<MyState>, String, String, StringConverter>::new(StringConverter::new())
 //!         .with_middleware(EchoMiddleware);
 //!     
 //!     // Use with Axum or other web frameworks
@@ -119,7 +109,7 @@ pub use message_converter::{JsonConverter, StringConverter};
 pub use middleware::Middleware;
 pub use middleware_context::{
     ConnectionContext, DisconnectContext, InboundContext, MessageConverter, MessageSender,
-    MiddlewareVec, OutboundContext, SendMessage, SharedMiddlewareVec, StateFactory, WebsocketError,
+    MiddlewareVec, OutboundContext, SendMessage, SharedMiddlewareVec, WebsocketError,
 };
 pub use unified::{UnifiedWebSocketExt, WebSocketUpgrade};
 pub use websocket_handler::{WebSocketBuilder, WebSocketHandler};

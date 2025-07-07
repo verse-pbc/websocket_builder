@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
     ConnectionContext, DisconnectContext, InboundContext, MessageConverter, Middleware,
-    OutboundContext, StateFactory, WebSocketHandler,
+    OutboundContext, WebSocketBuilder,
 };
 
 // Test state with rich functionality
@@ -18,6 +18,12 @@ struct ComprehensiveTestState {
     messages: Arc<parking_lot::Mutex<Vec<String>>>,
     connected: Arc<std::sync::atomic::AtomicBool>,
     error_count: Arc<AtomicUsize>,
+}
+
+impl Default for ComprehensiveTestState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ComprehensiveTestState {
@@ -55,15 +61,7 @@ impl ComprehensiveTestState {
     }
 }
 
-// State factory for tests
-#[derive(Clone)]
-struct ComprehensiveStateFactory;
-
-impl StateFactory<ComprehensiveTestState> for ComprehensiveStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> ComprehensiveTestState {
-        ComprehensiveTestState::new()
-    }
-}
+// No longer need StateFactory - state is created directly
 
 // Message converter for tests
 #[derive(Clone)]
@@ -257,23 +255,13 @@ impl Middleware for ErrorMiddleware {
 
 #[tokio::test]
 async fn test_actor_handler_creation_and_clone() {
-    let middlewares = vec![Arc::new(ConnectionLifecycleMiddleware::new("test"))
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >];
-
-    let handler = WebSocketHandler::new(
-        middlewares,
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        100,
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_middleware(ConnectionLifecycleMiddleware::new("test"))
+        .with_channel_size(100)
+        .build();
 
     // Test cloning
     let cloned_handler = handler.clone();
@@ -306,14 +294,12 @@ async fn test_state_actor_spawn_and_basic_commands() {
 
     // We can't directly test StateActor::spawn as it's private, but we can test
     // the handler creation which uses it internally
-    let handler = WebSocketHandler::new(
-        vec![],
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        100,
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_channel_size(100)
+        .build();
 
     // Handler creation should succeed - we can't access private fields, so just test creation
     drop(handler);
@@ -321,31 +307,14 @@ async fn test_state_actor_spawn_and_basic_commands() {
 
 #[tokio::test]
 async fn test_connection_lifecycle_with_middleware() {
-    let middleware1 = Arc::new(ConnectionLifecycleMiddleware::new("middleware1"))
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >;
-    let middleware2 = Arc::new(ConnectionLifecycleMiddleware::new("middleware2"))
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >;
-
-    let handler = WebSocketHandler::new(
-        vec![middleware1, middleware2],
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        100,
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_middleware(ConnectionLifecycleMiddleware::new("middleware1"))
+        .with_middleware(ConnectionLifecycleMiddleware::new("middleware2"))
+        .with_channel_size(100)
+        .build();
 
     // Test that the handler is created with middlewares - we can't access private fields
     drop(handler);
@@ -353,48 +322,20 @@ async fn test_connection_lifecycle_with_middleware() {
 
 #[tokio::test]
 async fn test_error_handling_in_connect() {
-    let error_middleware = Arc::new(ErrorMiddleware::new().fail_on_connect())
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >;
-
-    let handler = WebSocketHandler::new(
-        vec![error_middleware],
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        100,
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_middleware(ErrorMiddleware::new().fail_on_connect())
+        .with_channel_size(100)
+        .build();
 
     // Create a mock WebSocket (this is tricky without actual WebSocket connection)
     // For now, we'll test the handler creation which exercises the error paths indirectly
     drop(handler);
 }
 
-#[tokio::test]
-async fn test_state_factory_integration() {
-    #[derive(Clone)]
-    struct CustomStateFactory {
-        initial_value: usize,
-    }
-
-    impl StateFactory<usize> for CustomStateFactory {
-        fn create_state(&self, _token: CancellationToken) -> usize {
-            self.initial_value
-        }
-    }
-
-    let factory = CustomStateFactory { initial_value: 42 };
-    let token = CancellationToken::new();
-    let state = factory.create_state(token);
-
-    assert_eq!(state, 42);
-}
+// StateFactory test removed - no longer applicable after refactoring
 
 #[tokio::test]
 async fn test_message_converter_comprehensive() {
@@ -476,14 +417,12 @@ async fn test_cancellation_token_handling() {
 
 #[tokio::test]
 async fn test_channel_size_configuration() {
-    let handler = WebSocketHandler::new(
-        vec![],
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        500, // Custom channel size
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_channel_size(500) // Custom channel size
+        .build();
 
     // Can't access private fields, so just test that handler is created
     drop(handler);
@@ -491,39 +430,15 @@ async fn test_channel_size_configuration() {
 
 #[tokio::test]
 async fn test_multiple_middleware_chain() {
-    let middleware1 = Arc::new(ConnectionLifecycleMiddleware::new("first"))
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >;
-    let middleware2 = Arc::new(ConnectionLifecycleMiddleware::new("second"))
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >;
-    let middleware3 = Arc::new(ConnectionLifecycleMiddleware::new("third"))
-        as Arc<
-            dyn Middleware<
-                State = ComprehensiveTestState,
-                IncomingMessage = String,
-                OutgoingMessage = String,
-            >,
-        >;
-
-    let handler = WebSocketHandler::new(
-        vec![middleware1, middleware2, middleware3],
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        100,
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_middleware(ConnectionLifecycleMiddleware::new("first"))
+        .with_middleware(ConnectionLifecycleMiddleware::new("second"))
+        .with_middleware(ConnectionLifecycleMiddleware::new("third"))
+        .with_channel_size(100)
+        .build();
 
     // Test that all middlewares are registered - can't access private fields
     drop(handler);
@@ -531,14 +446,12 @@ async fn test_multiple_middleware_chain() {
 
 #[tokio::test]
 async fn test_empty_middleware_chain() {
-    let handler = WebSocketHandler::new(
-        vec![], // No middlewares
-        ComprehensiveConverter,
-        ComprehensiveStateFactory,
-        100,
-        None,
-        None,
-    );
+    let handler =
+        WebSocketBuilder::<ComprehensiveTestState, String, String, ComprehensiveConverter>::new(
+            ComprehensiveConverter,
+        )
+        .with_channel_size(100)
+        .build();
 
     // Handler should work with empty middleware chain - can't access private fields
     drop(handler);

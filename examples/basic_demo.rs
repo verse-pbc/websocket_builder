@@ -14,27 +14,26 @@ use axum::{extract::ConnectInfo, response::IntoResponse, routing::get, Router};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, Middleware, SendMessage, StateFactory, StringConverter, WebSocketBuilder,
+    InboundContext, Middleware, SendMessage, StringConverter, WebSocketBuilder,
 };
 
-// Simple state for demonstration
-#[derive(Debug, Clone, Default)]
-struct AppState {
-    #[allow(dead_code)]
-    name: String,
+// Per-connection state that tracks connection-specific information
+#[derive(Debug, Clone)]
+struct ConnectionState {
+    connection_id: String,
+    message_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-// State factory
-#[derive(Clone)]
-struct AppStateFactory;
-
-impl StateFactory<Arc<AppState>> for AppStateFactory {
-    fn create_state(&self, _token: CancellationToken) -> Arc<AppState> {
-        Arc::new(AppState {
-            name: "Basic Demo".to_string(),
-        })
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self {
+            connection_id: String::new(),
+            message_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
     }
 }
+
+// No longer need StateFactory - state is created directly
 
 // Use the built-in StringConverter
 
@@ -44,7 +43,7 @@ struct LoggingMiddleware;
 
 #[async_trait]
 impl Middleware for LoggingMiddleware {
-    type State = Arc<AppState>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -52,7 +51,20 @@ impl Middleware for LoggingMiddleware {
         &self,
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
     ) -> Result<()> {
-        println!("[LoggingMiddleware] Inbound message: {:?}", ctx.message);
+        if let Some(msg) = &ctx.message {
+            let count = ctx
+                .state
+                .read()
+                .message_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            println!(
+                "[LoggingMiddleware] Connection {} received message #{}: {}",
+                ctx.state.read().connection_id,
+                count,
+                msg
+            );
+        }
         ctx.next().await
     }
 }
@@ -65,7 +77,7 @@ struct PrefixEchoMiddleware {
 
 #[async_trait]
 impl Middleware for PrefixEchoMiddleware {
-    type State = Arc<AppState>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -95,24 +107,25 @@ async fn ws_handler(
 
     println!("New WebSocket connection from: {connection_id}");
 
+    // Create state for this connection
+    let state = ConnectionState {
+        connection_id: connection_id.clone(),
+        message_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+
     handler
-        .handle_upgrade(ws, connection_id, cancellation_token)
+        .handle_upgrade(ws, connection_id, cancellation_token, state)
         .await
 }
 
 // Type alias for the handler to make it cleaner
-type WebSocketHandler = websocket_builder::WebSocketHandler<
-    Arc<AppState>,
-    String,
-    String,
-    StringConverter,
-    AppStateFactory,
->;
+type WebSocketHandler =
+    websocket_builder::WebSocketHandler<ConnectionState, String, String, StringConverter>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Build the WebSocket handler with middleware
-    let builder = WebSocketBuilder::new(AppStateFactory, StringConverter::new())
+    let builder = WebSocketBuilder::new(StringConverter::new())
         .with_middleware(LoggingMiddleware)
         .with_middleware(PrefixEchoMiddleware {
             prefix: "ECHO".to_string(),

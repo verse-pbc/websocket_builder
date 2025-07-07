@@ -19,21 +19,14 @@ use axum::{extract::ConnectInfo, routing::get, Router};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, Middleware, SendMessage, StateFactory, StringConverter, WebSocketBuilder,
+    InboundContext, Middleware, SendMessage, StringConverter, WebSocketBuilder,
 };
 
-// Minimal state
+// Per-connection state (empty for echo server)
 #[derive(Debug, Clone, Default)]
-struct State;
+struct ConnectionState;
 
-#[derive(Clone)]
-struct StateFactory_;
-
-impl StateFactory<Arc<State>> for StateFactory_ {
-    fn create_state(&self, _token: CancellationToken) -> Arc<State> {
-        Arc::new(State)
-    }
-}
+// No longer need StateFactory - state is created directly
 
 // Use the built-in StringConverter
 
@@ -43,7 +36,7 @@ struct EchoMiddleware;
 
 #[async_trait]
 impl Middleware for EchoMiddleware {
-    type State = Arc<State>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -62,7 +55,7 @@ impl Middleware for EchoMiddleware {
 async fn main() -> Result<()> {
     // Build the handler
     let handler = Arc::new(
-        WebSocketBuilder::new(StateFactory_, StringConverter::new())
+        WebSocketBuilder::new(StringConverter::new())
             .with_middleware(EchoMiddleware)
             .build(),
     );
@@ -72,21 +65,16 @@ async fn main() -> Result<()> {
         ws: websocket_builder::WebSocketUpgrade,
         ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
         handler: Arc<
-            websocket_builder::WebSocketHandler<
-                Arc<State>,
-                String,
-                String,
-                StringConverter,
-                StateFactory_,
-            >,
+            websocket_builder::WebSocketHandler<ConnectionState, String, String, StringConverter>,
         >,
     ) -> axum::response::Response {
         use websocket_builder::UnifiedWebSocketExt;
         let connection_id = addr.to_string(); // Use actual IP:port
         let cancellation_token = CancellationToken::new();
         println!("Echo connection from: {connection_id}");
+        let state = ConnectionState;
         handler
-            .handle_upgrade(ws, connection_id, cancellation_token)
+            .handle_upgrade(ws, connection_id, cancellation_token, state)
             .await
     }
 

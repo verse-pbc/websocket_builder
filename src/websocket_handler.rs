@@ -6,7 +6,7 @@
 use crate::{
     split_actors::{process_on_connect, process_on_disconnect, SplitActors, SplitActorsConfig},
     websocket_trait::WebSocketConnection,
-    MessageConverter, Middleware, StateFactory,
+    MessageConverter, Middleware,
 };
 use anyhow::Result;
 use std::sync::Arc;
@@ -25,35 +25,31 @@ type MiddlewareCollection<S, I, O> =
 /// - Concurrent message processing with separate inbound/outbound actors
 /// - Optional connection limits via semaphore
 /// - Configurable channel sizes for backpressure
-pub struct WebSocketHandler<S, I, O, C, F>
+pub struct WebSocketHandler<S, I, O, C>
 where
     S: Send + Sync + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
-    middlewares: MiddlewareCollection<S, I, O>,
-    message_converter: Arc<C>,
-    state_factory: F,
-    channel_size: usize,
-    connection_semaphore: Option<Arc<Semaphore>>,
-    max_connection_time: Option<Duration>,
+    pub(crate) middlewares: MiddlewareCollection<S, I, O>,
+    pub(crate) message_converter: Arc<C>,
+    pub(crate) channel_size: usize,
+    pub(crate) connection_semaphore: Option<Arc<Semaphore>>,
+    pub(crate) max_connection_time: Option<Duration>,
 }
 
-impl<S, I, O, C, F> Clone for WebSocketHandler<S, I, O, C, F>
+impl<S, I, O, C> Clone for WebSocketHandler<S, I, O, C>
 where
     S: Send + Sync + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
     fn clone(&self) -> Self {
         Self {
             middlewares: self.middlewares.clone(),
             message_converter: self.message_converter.clone(),
-            state_factory: self.state_factory.clone(),
             channel_size: self.channel_size,
             connection_semaphore: self.connection_semaphore.clone(),
             max_connection_time: self.max_connection_time,
@@ -61,18 +57,16 @@ where
     }
 }
 
-impl<S, I, O, C, F> WebSocketHandler<S, I, O, C, F>
+impl<S, I, O, C> WebSocketHandler<S, I, O, C>
 where
     S: Send + Sync + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         middlewares: Vec<Arc<dyn Middleware<State = S, IncomingMessage = I, OutgoingMessage = O>>>,
         message_converter: C,
-        state_factory: F,
         channel_size: usize,
         max_connections: Option<usize>,
         max_connection_time: Option<Duration>,
@@ -80,7 +74,6 @@ where
         Self {
             middlewares: Arc::new(middlewares),
             message_converter: Arc::new(message_converter),
-            state_factory,
             channel_size,
             connection_semaphore: max_connections.map(|cap| Arc::new(Semaphore::new(cap))),
             max_connection_time,
@@ -88,15 +81,17 @@ where
     }
 
     pub async fn start<W>(
-        &self,
+        self: Arc<Self>,
         socket: W,
         connection_id: String,
         cancellation_token: CancellationToken,
+        state: S,
     ) -> Result<()>
     where
         W: WebSocketConnection,
         W::Sink: Send + 'static,
         W::Stream: Send + 'static,
+        S: Default,
     {
         let connection_token = cancellation_token.child_token();
 
@@ -113,8 +108,8 @@ where
             None
         };
 
-        // Create initial state wrapped in Arc<RwLock<>>
-        let initial_state = self.state_factory.create_state(connection_token.clone());
+        // Use the provided state
+        let initial_state = state;
         let shared_state = Arc::new(parking_lot::RwLock::new(initial_state));
 
         // Spawn timeout task if max_connection_time is configured
@@ -180,15 +175,13 @@ where
 }
 
 /// Builder for the WebSocket handler
-pub struct WebSocketBuilder<S, I, O, C, F>
+pub struct WebSocketBuilder<S, I, O, C>
 where
     S: Send + Sync + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
-    state_factory: F,
     middlewares: Vec<Arc<dyn Middleware<State = S, IncomingMessage = I, OutgoingMessage = O>>>,
     message_converter: C,
     channel_size: usize,
@@ -196,17 +189,15 @@ where
     max_connection_time: Option<Duration>,
 }
 
-impl<S, I, O, C, F> WebSocketBuilder<S, I, O, C, F>
+impl<S, I, O, C> WebSocketBuilder<S, I, O, C>
 where
     S: Send + Sync + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     C: MessageConverter<I, O> + Send + Sync + Clone + 'static,
-    F: StateFactory<S> + Send + Sync + Clone + 'static,
 {
-    pub fn new(state_factory: F, message_converter: C) -> Self {
+    pub fn new(message_converter: C) -> Self {
         Self {
-            state_factory,
             middlewares: Vec::new(),
             message_converter,
             channel_size: 100,
@@ -267,11 +258,10 @@ where
         self
     }
 
-    pub fn build(self) -> WebSocketHandler<S, I, O, C, F> {
+    pub fn build(self) -> WebSocketHandler<S, I, O, C> {
         WebSocketHandler::new(
             self.middlewares,
             self.message_converter,
-            self.state_factory,
             self.channel_size,
             self.max_connections,
             self.max_connection_time,

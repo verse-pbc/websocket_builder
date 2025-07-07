@@ -14,22 +14,13 @@ use axum::{
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, Middleware, SendMessage, StateFactory, StringConverter, UnifiedWebSocketExt,
+    InboundContext, Middleware, SendMessage, StringConverter, UnifiedWebSocketExt,
     WebSocketBuilder, WebSocketUpgrade,
 };
 
-// Simple state
+// Per-connection state (empty for this example)
 #[derive(Debug, Clone, Default)]
-struct State;
-
-#[derive(Clone)]
-struct StateFactory_;
-
-impl StateFactory<Arc<State>> for StateFactory_ {
-    fn create_state(&self, _token: CancellationToken) -> Arc<State> {
-        Arc::new(State)
-    }
-}
+struct ConnectionState;
 
 // Use the built-in StringConverter
 
@@ -39,7 +30,7 @@ struct EchoMiddleware;
 
 #[async_trait]
 impl Middleware for EchoMiddleware {
-    type State = Arc<State>;
+    type State = ConnectionState;
     type IncomingMessage = String;
     type OutgoingMessage = String;
 
@@ -55,7 +46,7 @@ impl Middleware for EchoMiddleware {
 }
 
 type Handler =
-    websocket_builder::WebSocketHandler<Arc<State>, String, String, StringConverter, StateFactory_>;
+    websocket_builder::WebSocketHandler<ConnectionState, String, String, StringConverter>;
 
 // Flexible handler that accepts both HTTP and WebSocket requests
 // The key insight: we need to structure this as a regular function, not a closure
@@ -70,8 +61,9 @@ async fn flexible_handler(
             let connection_id = addr.to_string(); // Use actual IP:port
             let cancellation_token = CancellationToken::new();
             println!("WebSocket connection from: {connection_id}");
+            let state = ConnectionState;
             handler
-                .handle_upgrade(ws, connection_id, cancellation_token)
+                .handle_upgrade(ws, connection_id, cancellation_token, state)
                 .await
         }
         None => {
@@ -109,7 +101,7 @@ ws.onopen = () => {
 async fn main() -> Result<()> {
     // Build the handler
     let handler = Arc::new(
-        WebSocketBuilder::new(StateFactory_, StringConverter::new())
+        WebSocketBuilder::new(StringConverter::new())
             .with_middleware(EchoMiddleware)
             .build(),
     );
