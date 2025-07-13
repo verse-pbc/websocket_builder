@@ -19,16 +19,32 @@ use axum::{extract::ConnectInfo, routing::get, Router};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, Middleware, SendMessage, StringConverter, WebSocketBuilder,
+    InboundContext, MessageConverterTrait, Middleware, SendMessage, WebSocketBuilder,
 };
 
 // Per-connection state (empty for echo server)
 #[derive(Debug, Clone, Default)]
 struct ConnectionState;
 
-// No longer need StateFactory - state is created directly
+// Simple string converter
+#[derive(Clone)]
+struct StringConverter;
 
-// Use the built-in StringConverter
+impl MessageConverterTrait<String, String> for StringConverter {
+    fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Ok(Some(s.to_string())),
+            Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
+        }
+    }
+
+    fn outbound_to_string(&self, message: String) -> Result<String> {
+        Ok(message)
+    }
+}
 
 // Simple echo middleware
 #[derive(Debug)]
@@ -55,7 +71,7 @@ impl Middleware for EchoMiddleware {
 async fn main() -> Result<()> {
     // Build the handler
     let handler = Arc::new(
-        WebSocketBuilder::new(StringConverter::new())
+        WebSocketBuilder::new(StringConverter)
             .with_middleware(EchoMiddleware)
             .build(),
     );

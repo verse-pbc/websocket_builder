@@ -14,7 +14,7 @@
 //! ## Quick Example
 //!
 //! ```rust,no_run
-//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, StringConverter, SendMessage};
+//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, MessageConverterTrait, SendMessage};
 //! use async_trait::async_trait;
 //! use anyhow::Result;
 //! use std::sync::Arc;
@@ -23,6 +23,25 @@
 //! #[derive(Debug, Clone, Default)]
 //! struct MyState;
 //!
+//! // Simple string converter
+//! #[derive(Clone)]
+//! struct StringConverter;
+//!
+//! impl MessageConverterTrait<String, String> for StringConverter {
+//!     fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
+//!         if bytes.is_empty() {
+//!             return Ok(None);
+//!         }
+//!         match std::str::from_utf8(bytes) {
+//!             Ok(s) => Ok(Some(s.to_string())),
+//!             Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
+//!         }
+//!     }
+//!
+//!     fn outbound_to_string(&self, message: String) -> Result<String> {
+//!         Ok(message)
+//!     }
+//! }
 //!
 //! // Echo middleware that sends messages back
 //! #[derive(Debug)]
@@ -48,7 +67,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let builder = WebSocketBuilder::<Arc<MyState>, String, String, StringConverter>::new(StringConverter::new())
+//!     let builder = WebSocketBuilder::<Arc<MyState>, String, String, StringConverter>::new(StringConverter)
 //!         .with_middleware(EchoMiddleware);
 //!     
 //!     // Use with Axum or other web frameworks
@@ -105,7 +124,7 @@ pub mod unified;
 pub mod websocket_handler;
 pub mod websocket_trait;
 
-pub use message_converter::{JsonConverter, StringConverter};
+pub use message_converter::MessageConverter as MessageConverterTrait;
 pub use middleware::Middleware;
 pub use middleware_context::{
     ConnectionContext, DisconnectContext, InboundContext, MessageConverter, MessageSender,

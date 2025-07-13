@@ -26,11 +26,8 @@ impl MessageConverter<String, String> for StringConverter {
         }
     }
 
-    fn outbound_to_bytes(
-        &self,
-        message: String,
-    ) -> Result<std::borrow::Cow<'_, [u8]>, anyhow::Error> {
-        Ok(std::borrow::Cow::Owned(message.into_bytes()))
+    fn outbound_to_string(&self, message: String) -> Result<String, anyhow::Error> {
+        Ok(message)
     }
 }
 

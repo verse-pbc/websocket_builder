@@ -54,10 +54,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 
 [[bench]]
-name = "backend_comparison"
-harness = false
-
-[[bench]]
 name = "stress_test"
 harness = false
 

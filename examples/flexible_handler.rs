@@ -14,7 +14,7 @@ use axum::{
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use websocket_builder::{
-    InboundContext, Middleware, SendMessage, StringConverter, UnifiedWebSocketExt,
+    InboundContext, MessageConverterTrait, Middleware, SendMessage, UnifiedWebSocketExt,
     WebSocketBuilder, WebSocketUpgrade,
 };
 
@@ -22,7 +22,25 @@ use websocket_builder::{
 #[derive(Debug, Clone, Default)]
 struct ConnectionState;
 
-// Use the built-in StringConverter
+// Simple string converter
+#[derive(Clone)]
+struct StringConverter;
+
+impl MessageConverterTrait<String, String> for StringConverter {
+    fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Ok(Some(s.to_string())),
+            Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
+        }
+    }
+
+    fn outbound_to_string(&self, message: String) -> Result<String> {
+        Ok(message)
+    }
+}
 
 // Echo middleware
 #[derive(Debug)]
@@ -101,7 +119,7 @@ ws.onopen = () => {
 async fn main() -> Result<()> {
     // Build the handler
     let handler = Arc::new(
-        WebSocketBuilder::new(StringConverter::new())
+        WebSocketBuilder::new(StringConverter)
             .with_middleware(EchoMiddleware)
             .build(),
     );

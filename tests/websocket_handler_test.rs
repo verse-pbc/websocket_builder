@@ -51,10 +51,6 @@ impl MessageConverter<String, String> for TestConverter {
         }
     }
 
-    fn outbound_to_bytes(&self, message: String) -> Result<std::borrow::Cow<'_, [u8]>> {
-        Ok(std::borrow::Cow::Owned(message.into_bytes()))
-    }
-
     fn outbound_to_string(&self, s: String) -> Result<String> {
         Ok(s)
     }
