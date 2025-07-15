@@ -24,14 +24,35 @@ websocket_builder = "0.2.0-alpha.1"
 
 ```rust
 use websocket_builder::{
-    WebSocketBuilder, StringConverter, Middleware, 
+    WebSocketBuilder, MessageConverterTrait, Middleware,
     InboundContext, SendMessage
 };
 use async_trait::async_trait;
+use anyhow::Result;
 
 // Define per-connection state
 #[derive(Debug, Clone, Default)]
 struct ConnectionState;
+
+// Simple string converter
+#[derive(Clone)]
+struct StringConverter;
+
+impl MessageConverterTrait<String, String> for StringConverter {
+    fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Ok(Some(s.to_string())),
+            Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
+        }
+    }
+
+    fn outbound_to_string(&self, message: String) -> Result<String> {
+        Ok(message)
+    }
+}
 
 // Create a middleware
 #[derive(Debug)]
@@ -46,7 +67,7 @@ impl Middleware for EchoMiddleware {
     async fn process_inbound(
         &self,
         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         if let Some(msg) = &ctx.message {
             ctx.send_message(format!("Echo: {}", msg))?;
         }
@@ -55,7 +76,7 @@ impl Middleware for EchoMiddleware {
 }
 
 // Build and use
-let handler = WebSocketBuilder::new(StringConverter::new())
+let handler = WebSocketBuilder::new(StringConverter)
     .with_middleware(EchoMiddleware)
     .build();
 ```
@@ -63,14 +84,17 @@ let handler = WebSocketBuilder::new(StringConverter::new())
 ## Examples
 
 - `examples/simple_echo.rs` - Minimal echo server
-- `examples/pipeline_demo.rs` - Multiple middleware in sequence
+- `examples/pipeline_demo.rs` - Multiple middleware in sequence  
 - `examples/basic_demo.rs` - Connection state tracking
 - `examples/flexible_handler.rs` - HTTP and WebSocket on same endpoint
+- `examples/debug_ws.rs` - WebSocket debugging client
 
 ## Configuration
 
 ```rust
-WebSocketBuilder::new(StringConverter::new())
+use std::time::Duration;
+
+WebSocketBuilder::new(StringConverter)
     .with_middleware(middleware)
     .with_channel_size(100)
     .with_max_connections(1000)

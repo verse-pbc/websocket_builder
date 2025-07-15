@@ -4,8 +4,15 @@ This directory contains examples demonstrating various features of the websocket
 
 ## Examples
 
+### simple_echo.rs
+Minimal echo server - the simplest possible WebSocket server.
+
+```bash
+cargo run --example simple_echo
+```
+
 ### basic_demo.rs
-Basic example showing how to create a WebSocket server with simple middleware.
+Basic example showing how to create a WebSocket server with connection state tracking and middleware.
 
 ```bash
 cargo run --example basic_demo
@@ -13,17 +20,24 @@ cargo run --example basic_demo
 
 ### pipeline_demo.rs
 Comprehensive middleware pipeline example demonstrating:
-- Connection tracking middleware
-- Logging middleware  
+- Logging middleware
+- Validation middleware  
 - Message transformation middleware
-- Stats middleware
+- Echo middleware
 
 ```bash
 cargo run --example pipeline_demo
 ```
 
+### flexible_handler.rs
+Shows how the same endpoint can handle both regular HTTP and WebSocket requests using `Option<WebSocketUpgrade>`.
+
+```bash
+cargo run --example flexible_handler
+```
+
 ### debug_ws.rs
-Simple WebSocket debugging tool.
+Simple WebSocket debugging client for testing servers.
 
 ```bash
 cargo run --example debug_ws
