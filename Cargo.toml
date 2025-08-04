@@ -1,60 +1,32 @@
 [package]
 name = "websocket_builder"
-version = "0.2.0-alpha.1"
+version = "1.1.0-alpha.1"
 edition = "2021"
 authors = ["Daniel Cadenas <dcadenas@gmail.com>"]
-description = "A flexible WebSocket builder framework with middleware support"
+description = "A simple WebSocket framework with per-connection handlers"
 license = "MIT"
 repository = "https://github.com/verse-pbc/websocket_builder"
 documentation = "https://docs.rs/websocket_builder"
 readme = "README.md"
-keywords = ["websocket", "middleware", "async", "axum"]
+keywords = ["websocket", "async", "axum", "handler"]
 categories = ["network-programming", "web-programming", "asynchronous"]
 
 [lib]
 name = "websocket_builder"
 
-[features]
-default = ["tungstenite"]
-tungstenite = []
-fastwebsockets = ["dep:fastwebsockets"]
-# High-performance JSON parsing options
-simd-json = ["dep:simd-json"]
-sonic-rs = ["dep:sonic-rs"]
-
 [dependencies]
 anyhow = "1.0.89"
-async-trait = "0.1.82"
 axum = { version = "0.8", features = ["ws"] }
 flume = "0.11"
 futures-util = "0.3.31"
-hickory-resolver = { version = "0.24.1", features = ["tokio-runtime"] }
-parking_lot = "0.12"
-thiserror = "1.0.63"
 tokio = { version = "1.45", features = ["sync", "macros", "rt-multi-thread"] }
-tokio-util = { version = "0.7.12", features = ["rt"] }
 tracing = "0.1"
-
-# Optional fastwebsockets support
-fastwebsockets = { version = "0.10", features = ["upgrade", "with_axum", "unstable-split"], optional = true }
-
-# High-performance JSON parsing libraries
-simd-json = { version = "0.13", optional = true }
-sonic-rs = { version = "0.3", optional = true }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 
 [dev-dependencies]
 tokio = { version = "1.45", features = ["full"] }
-tokio-tungstenite = "0.26.1"
-tower-http = { version = "0.6.2", features = ["trace"] }
-pretty_assertions = "1.4.1"
-criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures = "0.3"
-
-[[bench]]
-name = "stress_test"
-harness = false
+parking_lot = "0.12"
+tokio-tungstenite = "0.24"
+http = "1.1"
 
 

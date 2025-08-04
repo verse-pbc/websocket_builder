@@ -1,76 +1,71 @@
 # WebSocket Builder Examples
 
-This directory contains examples demonstrating various features of the websocket_builder library.
+This directory contains examples demonstrating how to use the websocket_builder library.
 
 ## Examples
 
-### simple_echo.rs
-Minimal echo server - the simplest possible WebSocket server.
+### echo_server.rs
+A simple WebSocket echo server that sends back any message it receives.
 
 ```bash
-cargo run --example simple_echo
+cargo run --example echo_server
 ```
 
-### basic_demo.rs
-Basic example showing how to create a WebSocket server with connection state tracking and middleware.
+Then connect with a WebSocket client to `ws://localhost:3000/ws`.
+
+### chat_server.rs
+A multi-user chat room with usernames and broadcast messaging.
 
 ```bash
-cargo run --example basic_demo
+cargo run --example chat_server
 ```
 
-### pipeline_demo.rs
-Comprehensive middleware pipeline example demonstrating:
-- Logging middleware
-- Validation middleware  
-- Message transformation middleware
-- Echo middleware
-
-```bash
-cargo run --example pipeline_demo
-```
+Connect multiple WebSocket clients to `ws://localhost:3000/ws` and:
+1. Set your username with `/name <username>`
+2. Send messages that will be broadcast to all connected users
 
 ### flexible_handler.rs
-Shows how the same endpoint can handle both regular HTTP and WebSocket requests using `Option<WebSocketUpgrade>`.
+Shows how the same route can handle both regular HTTP and WebSocket requests.
 
 ```bash
 cargo run --example flexible_handler
 ```
 
-### debug_ws.rs
-Simple WebSocket debugging client for testing servers.
+Open `http://localhost:3000` in your browser to see an HTML page with a built-in WebSocket client. The same route serves the HTML page on regular GET requests and handles WebSocket upgrades.
 
-```bash
-cargo run --example debug_ws
-```
+## Testing with a WebSocket Client
 
-## Backend Selection
+You can test these examples using various WebSocket clients:
 
-The library supports both tungstenite (default) and fastwebsockets backends. Switch between them using feature flags in your Cargo.toml:
-
-```toml
-# Use tungstenite (default)
-websocket_builder = "0.2.0-alpha.1"
-
-# Use fastwebsockets only
-websocket_builder = { version = "0.1.0-alpha.1", default-features = false, features = ["fastwebsockets"] }
-```
-
-## Testing WebSocket Connections
-
-All examples can be tested with `websocat`:
-
+### Using websocat
 ```bash
 # Install websocat
 cargo install websocat
 
-# Test connection
-websocat ws://127.0.0.1:3001/ws
+# Connect to echo server
+websocat ws://localhost:3000/ws
 
-# Send messages
-echo "Hello" | websocat ws://127.0.0.1:3001/ws -n
+# Connect to chat server
+websocat ws://localhost:3000/ws
+> /name Alice
+> Hello everyone!
 ```
 
-## Choosing a Backend
+### Using wscat (Node.js)
+```bash
+# Install wscat
+npm install -g wscat
 
-- **Tungstenite** (default): Maximum compatibility, well-tested, mature
-- **FastWebSockets**: High performance, low latency, minimal overhead
+# Connect
+wscat -c ws://localhost:3000/ws
+```
+
+### Using a browser
+Open the browser console and run:
+```javascript
+const ws = new WebSocket('ws://localhost:3000/ws');
+ws.onmessage = (event) => console.log('Received:', event.data);
+ws.onopen = () => {
+    ws.send('Hello from browser!');
+};
+```

@@ -1,151 +1,293 @@
-//! Example showing flexible WebSocket handling with Option<WebSocketUpgrade>
+//! Flexible handler example
 //!
-//! This demonstrates how the same endpoint can handle both regular HTTP and WebSocket requests.
-//! Works identically with both tungstenite and fastwebsockets backends.
+//! This example shows how to handle both regular HTTP requests and WebSocket
+//! upgrades on the SAME route using Option<WebSocketUpgrade>. When accessed
+//! via a browser, it serves an HTML page. When accessed via WebSocket, it
+//! handles the connection.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use axum::{
-    extract::ConnectInfo,
+    extract::{
+        ws::{Message, WebSocket},
+        ConnectInfo,
+    },
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::any,
     Router,
 };
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+use futures_util::{stream::SplitSink, SinkExt};
+use std::net::SocketAddr;
 use websocket_builder::{
-    InboundContext, MessageConverterTrait, Middleware, SendMessage, UnifiedWebSocketExt,
-    WebSocketBuilder, WebSocketUpgrade,
+    DisconnectReason, HandlerFactory, Utf8Bytes, WebSocketHandler, WebSocketUpgrade,
 };
 
-// Per-connection state (empty for this example)
-#[derive(Debug, Clone, Default)]
-struct ConnectionState;
-
-// Simple string converter
-#[derive(Clone)]
-struct StringConverter;
-
-impl MessageConverterTrait<String, String> for StringConverter {
-    fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
-        if bytes.is_empty() {
-            return Ok(None);
-        }
-        match std::str::from_utf8(bytes) {
-            Ok(s) => Ok(Some(s.to_string())),
-            Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
-        }
-    }
-
-    fn outbound_to_string(&self, message: String) -> Result<String> {
-        Ok(message)
-    }
+/// Simple echo handler
+struct EchoHandler {
+    addr: SocketAddr,
+    sink: Option<SplitSink<WebSocket, Message>>,
 }
 
-// Echo middleware
-#[derive(Debug)]
-struct EchoMiddleware;
-
-#[async_trait]
-impl Middleware for EchoMiddleware {
-    type State = ConnectionState;
-    type IncomingMessage = String;
-    type OutgoingMessage = String;
-
-    async fn process_inbound(
-        &self,
-        ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
+impl WebSocketHandler for EchoHandler {
+    async fn on_connect(
+        &mut self,
+        addr: SocketAddr,
+        sink: SplitSink<WebSocket, Message>,
     ) -> Result<()> {
-        if let Some(message) = &ctx.message {
-            ctx.send_message(format!("Echo: {message}"))?;
+        self.addr = addr;
+        self.sink = Some(sink);
+        println!("Client connected from {addr}");
+
+        // Send welcome message
+        if let Some(sink) = &mut self.sink {
+            sink.send(Message::Text(
+                "Welcome! Send me a message and I'll echo it back.".into(),
+            ))
+            .await?;
         }
-        ctx.next().await
+        Ok(())
+    }
+
+    async fn on_message(&mut self, text: Utf8Bytes) -> Result<()> {
+        println!("Received from {}: {text}", self.addr);
+
+        // Echo the message back
+        if let Some(sink) = &mut self.sink {
+            sink.send(Message::Text(format!("Echo: {text}").into()))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn on_disconnect(&mut self, reason: DisconnectReason) {
+        println!("Client {} disconnected: {reason:?}", self.addr);
     }
 }
 
-type Handler =
-    websocket_builder::WebSocketHandler<ConnectionState, String, String, StringConverter>;
+/// Factory for creating echo handlers
+#[derive(Clone)]
+struct EchoHandlerFactory;
 
-// Flexible handler that accepts both HTTP and WebSocket requests
-// The key insight: we need to structure this as a regular function, not a closure
+impl HandlerFactory for EchoHandlerFactory {
+    type Handler = EchoHandler;
+
+    fn create(&self, _headers: &axum::http::HeaderMap) -> Self::Handler {
+        EchoHandler {
+            addr: "0.0.0.0:0".parse().unwrap(),
+            sink: None,
+        }
+    }
+}
+
+/// Handler that serves HTML or upgrades to WebSocket based on the request
+/// This demonstrates how to conditionally handle WebSocket upgrades
 async fn flexible_handler(
-    axum::extract::State(handler): axum::extract::State<Arc<Handler>>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     ws: Option<WebSocketUpgrade>,
 ) -> Response {
     match ws {
         Some(ws) => {
-            // Handle WebSocket upgrade
-            let connection_id = addr.to_string(); // Use actual IP:port
-            let cancellation_token = CancellationToken::new();
-            println!("WebSocket connection from: {connection_id}");
-            let state = ConnectionState;
-            handler
-                .handle_upgrade(ws, connection_id, cancellation_token, state)
-                .await
+            // This is a WebSocket upgrade request
+            println!("WebSocket upgrade request from {addr}");
+            let handler = EchoHandlerFactory.create(&headers);
+            websocket_builder::handle_upgrade(ws, addr, handler).await
         }
         None => {
-            // Handle regular HTTP request
-            Html(
-                r#"
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>WebSocket Test</title>
-                </head>
-                <body>
-                    <h1>WebSocket Test Page</h1>
-                    <p>This endpoint supports both HTTP and WebSocket connections!</p>
-                    <p>Open the browser console and run:</p>
-                    <pre>
-const ws = new WebSocket('ws://' + window.location.host + '/');
-ws.onmessage = (e) => console.log('Received:', e.data);
-ws.onopen = () => {
-    console.log('Connected!');
-    ws.send('Hello from browser!');
-};
-                    </pre>
-                    <p>Or test with: <code>websocat ws://127.0.0.1:3003/</code></p>
-                </body>
-                </html>
-            "#,
-            )
-            .into_response()
+            // This is a regular HTTP request - serve HTML
+            println!("HTTP request from {addr}");
+            Html(HTML_PAGE).into_response()
         }
     }
 }
 
+const HTML_PAGE: &str = r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Flexible Handler Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .highlight {
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            height: 300px;
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: #f5f5f5;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .sent {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+        .received {
+            background-color: #f5f5f5;
+            text-align: left;
+        }
+        .system {
+            background-color: #fff3cd;
+            text-align: center;
+            font-style: italic;
+        }
+        input[type="text"] {
+            width: 70%;
+            padding: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            margin-left: 10px;
+        }
+        code {
+            background-color: #f0f0f0;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Flexible Handler Demo</h1>
+    
+    <div class="highlight">
+        <p><strong>This page demonstrates how the SAME route can handle both HTTP and WebSocket!</strong></p>
+        <p>The current URL served this HTML page via HTTP GET.</p>
+        <p>But if you connect via WebSocket to the SAME URL, it will handle the WebSocket connection.</p>
+    </div>
+
+    <h2>Try it in the browser console:</h2>
+    <pre><code>// Connect to the SAME URL with WebSocket
+const ws = new WebSocket('ws://' + window.location.host + window.location.pathname);
+ws.onmessage = (e) => console.log('Received:', e.data);
+ws.onopen = () => {
+    console.log('Connected!');
+    ws.send('Hello from console!');
+};</code></pre>
+
+    <h2>Or use the interactive client below:</h2>
+    <div id="messages"></div>
+    <div>
+        <input type="text" id="messageInput" placeholder="Type a message..." />
+        <button id="sendButton">Send</button>
+        <button id="connectButton">Connect to Same URL</button>
+    </div>
+
+    <script>
+        let ws = null;
+        const messages = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const connectButton = document.getElementById('connectButton');
+
+        function addMessage(text, className) {
+            const div = document.createElement('div');
+            div.className = 'message ' + className;
+            div.textContent = text;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function connect() {
+            // Connect to the SAME URL that served this page!
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}${window.location.pathname}`;
+            
+            addMessage(`Connecting to ${wsUrl} (same URL as this page!)`, 'system');
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                messageInput.disabled = false;
+                sendButton.disabled = false;
+                connectButton.textContent = 'Disconnect';
+                addMessage('Connected! Now using WebSocket on the same route.', 'system');
+            };
+            
+            ws.onmessage = (event) => {
+                addMessage(event.data, 'received');
+            };
+            
+            ws.onclose = () => {
+                messageInput.disabled = true;
+                sendButton.disabled = true;
+                connectButton.textContent = 'Connect to Same URL';
+                addMessage('Disconnected from WebSocket', 'system');
+                ws = null;
+            };
+            
+            ws.onerror = (error) => {
+                addMessage('Error: ' + error, 'system');
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (message && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(message);
+                addMessage(message, 'sent');
+                messageInput.value = '';
+            }
+        }
+
+        connectButton.onclick = () => {
+            if (ws) {
+                disconnect();
+            } else {
+                connect();
+            }
+        };
+
+        sendButton.onclick = sendMessage;
+        sendButton.disabled = true;
+        messageInput.disabled = true;
+
+        messageInput.onkeypress = (event) => {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        };
+    </script>
+</body>
+</html>
+"#;
+
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Build the handler
-    let handler = Arc::new(
-        WebSocketBuilder::new(StringConverter)
-            .with_middleware(EchoMiddleware)
-            .build(),
-    );
+async fn main() {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
 
-    // Create the app - same endpoint handles both HTTP and WebSocket requests
-    let app = Router::new()
-        .route("/", get(flexible_handler))
-        .with_state(handler);
+    // Build our application with a SINGLE route that handles both HTTP and WebSocket
+    let app = Router::new().route("/", any(flexible_handler));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3003").await?;
+    // Run it
+    let addr = "127.0.0.1:3000";
+    println!("Listening on http://{addr}");
+    println!("Open http://127.0.0.1:3000 in your browser");
+    println!("The SAME route handles both HTTP (serves HTML) and WebSocket connections!");
 
-    println!("Flexible server running on http://127.0.0.1:3003");
-    println!("- Visit http://127.0.0.1:3003 in a browser for the test page");
-    println!("- Connect via WebSocket: websocat ws://127.0.0.1:3003/");
-    println!();
-    println!("This demonstrates Option<WebSocketUpgrade> for flexible endpoints:");
-
-    #[cfg(feature = "tungstenite")]
-    println!("Backend: tungstenite");
-    #[cfg(feature = "fastwebsockets")]
-    println!("Backend: fastwebsockets");
-
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
-    Ok(())
+    .await
+    .unwrap();
 }

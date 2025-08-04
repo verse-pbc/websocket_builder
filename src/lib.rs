@@ -1,139 +1,109 @@
 //! # WebSocket Builder
 //!
-//! A flexible WebSocket framework for building scalable, middleware-based WebSocket servers.
+//! A simple, trait-based WebSocket framework for Rust with Axum integration.
+
+// Enable strict clippy lints for better performance and code quality
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::nursery)]
+#![warn(clippy::cargo)]
+// Performance-specific lints
+#![warn(clippy::unnecessary_to_owned)]
+#![warn(clippy::redundant_clone)]
+#![warn(clippy::inefficient_to_string)]
+#![warn(clippy::manual_str_repeat)]
+// Allow some pedantic lints that might be too strict
+#![allow(clippy::module_name_repetitions)] // Common in Rust APIs
+#![allow(clippy::must_use_candidate)] // Not all functions need #[must_use]
+#![allow(clippy::missing_errors_doc)] // Can add later if needed
+#![allow(clippy::missing_panics_doc)] // Can add later if needed
+#![allow(clippy::multiple_crate_versions)] // Dependencies manage their own versions
+#![allow(clippy::option_if_let_else)] // Sometimes match is clearer
+#![allow(clippy::type_complexity)] // Will be addressed in future refactoring
+#![allow(clippy::single_match_else)] // Sometimes match is clearer
+#![allow(clippy::cognitive_complexity)] // Will be addressed in future refactoring
 //!
 //! ## Overview
 //!
-//! `websocket_builder` provides a high-level abstraction over WebSocket connections with:
-//! - Middleware-based message processing pipeline
-//! - Built-in connection management and lifecycle handling
-//! - Backpressure support for handling slow clients
-//! - Type-safe message conversion and routing
-//! - Integration with Axum web framework
+//! `websocket_builder` provides a minimal abstraction over WebSocket connections:
+//! - Simple trait-based handler with just 3 methods
+//! - Per-connection handler instances for natural state management
+//! - Automatic handling of WebSocket protocol details
+//! - Easy integration with Axum
 //!
 //! ## Quick Example
 //!
 //! ```rust,no_run
-//! use websocket_builder::{WebSocketBuilder, Middleware, InboundContext, MessageConverterTrait, SendMessage};
-//! use async_trait::async_trait;
+//! use websocket_builder::{WebSocketHandler, HandlerFactory, DisconnectReason, Utf8Bytes, websocket_route};
+//! use axum::{extract::ws::{Message, WebSocket}, Router, routing::get};
+//! use futures_util::{stream::SplitSink, SinkExt};
+//! use std::net::SocketAddr;
 //! use anyhow::Result;
-//! use std::sync::Arc;
 //!
-//! // Define a simple state type
-//! #[derive(Debug, Clone, Default)]
-//! struct MyState;
+//! struct ChatHandler {
+//!     addr: SocketAddr,
+//!     sink: Option<SplitSink<WebSocket, Message>>,
+//! }
 //!
-//! // Simple string converter
-//! #[derive(Clone)]
-//! struct StringConverter;
-//!
-//! impl MessageConverterTrait<String, String> for StringConverter {
-//!     fn inbound_from_bytes(&self, bytes: &[u8]) -> Result<Option<String>> {
-//!         if bytes.is_empty() {
-//!             return Ok(None);
+//! impl WebSocketHandler for ChatHandler {
+//!     async fn on_connect(
+//!         &mut self,
+//!         addr: SocketAddr,
+//!         sink: SplitSink<WebSocket, Message>,
+//!     ) -> Result<()> {
+//!         self.addr = addr;
+//!         self.sink = Some(sink);
+//!         
+//!         // Send welcome message
+//!         if let Some(sink) = &mut self.sink {
+//!             sink.send(Message::Text("Welcome to the chat!".into())).await?;
 //!         }
-//!         match std::str::from_utf8(bytes) {
-//!             Ok(s) => Ok(Some(s.to_string())),
-//!             Err(e) => Err(anyhow::anyhow!("Invalid UTF-8: {}", e)),
-//!         }
+//!         Ok(())
 //!     }
-//!
-//!     fn outbound_to_string(&self, message: String) -> Result<String> {
-//!         Ok(message)
+//!     
+//!     async fn on_message(&mut self, text: Utf8Bytes) -> Result<()> {
+//!         // Echo the message back
+//!         if let Some(sink) = &mut self.sink {
+//!             sink.send(Message::Text(format!("Echo: {}", text).into())).await?;
+//!         }
+//!         Ok(())
+//!     }
+//!     
+//!     async fn on_disconnect(&mut self, reason: DisconnectReason) {
+//!         println!("Client {} disconnected: {:?}", self.addr, reason);
 //!     }
 //! }
 //!
-//! // Echo middleware that sends messages back
-//! #[derive(Debug)]
-//! struct EchoMiddleware;
+//! struct ChatHandlerFactory;
 //!
-//! #[async_trait]
-//! impl Middleware for EchoMiddleware {
-//!     type State = Arc<MyState>;
-//!     type IncomingMessage = String;
-//!     type OutgoingMessage = String;
-//!
-//!     async fn process_inbound(
-//!         &self,
-//!         ctx: &mut InboundContext<Self::State, Self::IncomingMessage, Self::OutgoingMessage>,
-//!     ) -> Result<()> {
-//!         // Echo the message back
-//!         if let Some(message) = &ctx.message {
-//!             ctx.send_message(message.clone())?;
+//! impl HandlerFactory for ChatHandlerFactory {
+//!     type Handler = ChatHandler;
+//!     
+//!     fn create(&self, _headers: &axum::http::HeaderMap) -> Self::Handler {
+//!         ChatHandler {
+//!             addr: "0.0.0.0:0".parse().unwrap(),
+//!             sink: None,
 //!         }
-//!         ctx.next().await
 //!     }
 //! }
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let builder = WebSocketBuilder::<Arc<MyState>, String, String, StringConverter>::new(StringConverter)
-//!         .with_middleware(EchoMiddleware);
+//!     let app = websocket_route("/ws", ChatHandlerFactory);
 //!     
-//!     // Use with Axum or other web frameworks
-//!     let handler = builder.build();
+//!     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+//!     axum::serve(listener, app).await.unwrap();
 //! }
 //! ```
-//!
-//! ## Core Concepts
-//!
-//! ### Middleware
-//!
-//! Middleware components process messages in a pipeline fashion. Each middleware can:
-//! - Handle inbound messages from clients
-//! - Transform or filter outbound messages to clients
-//! - Manage connection lifecycle events (connect/disconnect)
-//! - Maintain per-connection state
-//!
-//! ### Message Flow
-//!
-//! 1. **Inbound**: Client → WebSocket → MessageConverter → Middleware Pipeline → Your Handler
-//! 2. **Outbound**: Your Handler → Middleware Pipeline → MessageConverter → WebSocket → Client
-//!
-//! ### Connection Management
-//!
-//! The framework automatically handles:
-//! - Connection establishment and teardown
-//! - Graceful disconnection with customizable timeouts
-//! - Backpressure when clients can't keep up
-//! - Error propagation and connection cleanup
-//!
-//! ## Features
-//!
-//! - **Flexible Middleware System**: Compose reusable message processing components
-//! - **Type Safety**: Generic over message types with built-in conversion traits
-//! - **Performance**: Efficient message routing with minimal allocations
-//! - **Error Handling**: Comprehensive error types with context preservation
-//! - **Testing Support**: Utilities for testing middleware and handlers
-//!
-//! ## Advanced Usage
-//!
-//! See the [examples](https://github.com/verse-pbc/websocket_builder/tree/main/examples) directory
-//! for more complex scenarios including:
-//! - Authentication middleware
-//! - Rate limiting
-//! - Message routing
-//! - State management
-//! - Custom protocols
 
-pub mod message_converter;
-pub mod middleware;
-pub mod middleware_context;
-mod split_actors; // Internal implementation detail
-pub mod unified;
-pub mod websocket_handler;
-pub mod websocket_trait;
+mod axum;
+mod connection;
+mod handler;
 
-pub use message_converter::MessageConverter as MessageConverterTrait;
-pub use middleware::Middleware;
-pub use middleware_context::{
-    ConnectionContext, DisconnectContext, InboundContext, MessageConverter, MessageSender,
-    MiddlewareVec, OutboundContext, SendMessage, SharedMiddlewareVec, WebsocketError,
+// Re-export the public API
+pub use axum::{
+    handle_upgrade, handle_upgrade_with_config, websocket_route, websocket_route_with_config,
+    WebSocketUpgrade,
 };
-pub use unified::{UnifiedWebSocketExt, WebSocketUpgrade};
-pub use websocket_handler::{WebSocketBuilder, WebSocketHandler};
-#[cfg(feature = "fastwebsockets")]
-pub use websocket_trait::fast::{FastWebSocket, FastWsSink, FastWsStream};
-pub use websocket_trait::{
-    AxumWebSocket, WebSocketConnection, WsError, WsMessage, WsSink, WsStream, WsStreamFuture,
-};
+pub use connection::{handle_socket, ConnectionConfig};
+pub use handler::{DisconnectReason, HandlerFactory, Utf8Bytes, WebSocketHandler};

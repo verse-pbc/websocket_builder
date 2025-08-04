@@ -1,0 +1,38 @@
+# Clippy configuration for websocket_builder
+# Focused on catching memory inefficiencies and performance issues
+
+# Set the minimum supported Rust version
+msrv = "1.70"
+
+# Warn on all wildcard imports
+warn-on-all-wildcard-imports = true
+
+# Set thresholds for various lints
+# Cognitive complexity threshold (default is 25)
+cognitive-complexity-threshold = 20
+
+# Function lines threshold (default is 100)
+too-many-lines-threshold = 80
+
+# Type complexity threshold (default is 250)
+type-complexity-threshold = 200
+
+# Disallow certain types that might indicate inefficiencies
+# Uncomment to enforce:
+# disallowed-types = [
+#     # Prevent Box<Vec<T>> which is usually unnecessary
+#     { path = "std::boxed::Box", reason = "Consider if Box is really needed" },
+# ]
+
+# Disallow methods that might cause unnecessary allocations
+# Uncomment to enforce stricter rules:
+# disallowed-methods = [
+#     { path = "str::to_string", reason = "Consider using Into<String> or Cow<str>" },
+#     { path = "String::from", reason = "Consider using Into<String> or &str" },
+# ]
+
+# Allow certain lints that might be too restrictive for this project
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-print-in-tests = true
