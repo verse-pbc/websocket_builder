@@ -355,16 +355,15 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(2));
 
         // Acquire first permit
-        let permit1 = semaphore.clone().try_acquire_owned();
-        assert!(permit1.is_ok());
+        let permit1 = semaphore.clone().try_acquire_owned().unwrap();
 
-        // Acquire second permit
-        assert!(semaphore.clone().try_acquire_owned().is_ok());
+        // Acquire second permit and keep it alive
+        let _permit2 = semaphore.clone().try_acquire_owned().unwrap();
 
         // Third should fail
         assert!(semaphore.clone().try_acquire_owned().is_err());
 
-        // Drop one permit
+        // Drop first permit
         drop(permit1);
 
         // Now we should be able to acquire again
