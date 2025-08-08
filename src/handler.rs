@@ -18,6 +18,8 @@ pub enum DisconnectReason {
     Close(u16, String),
     /// Connection error
     Error(String),
+    /// Connection timeout
+    Timeout(String),
     /// Unknown disconnection
     Unknown,
 }
@@ -180,6 +182,9 @@ mod tests {
         let reason = DisconnectReason::Close(1000, "normal".to_string());
         assert!(format!("{reason:?}").contains("1000"));
         assert!(format!("{reason:?}").contains("normal"));
+
+        let reason = DisconnectReason::Timeout("idle timeout".to_string());
+        assert!(format!("{reason:?}").contains("idle timeout"));
     }
 
     #[test]
@@ -191,6 +196,7 @@ mod tests {
         assert_debug(&DisconnectReason::Unknown);
         assert_debug(&DisconnectReason::Error("error".to_string()));
         assert_debug(&DisconnectReason::Close(1001, "going away".to_string()));
+        assert_debug(&DisconnectReason::Timeout("max duration".to_string()));
     }
 
     #[test]

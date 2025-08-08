@@ -112,17 +112,27 @@ cargo run --example echo_server
 
 ## Configuration
 
-You can configure connection limits:
+You can configure connection limits and timeouts:
 
 ```rust
 use websocket_builder::{websocket_route_with_config, ConnectionConfig};
+use std::time::Duration;
 
 let config = ConnectionConfig {
-    max_connections: Some(1000),
+    max_connections: Some(1000),           // Maximum concurrent connections
+    max_connection_duration: Some(Duration::from_secs(300)), // 5 minute max duration
+    idle_timeout: Some(Duration::from_secs(60)),            // 1 minute idle timeout
 };
 
 let app = websocket_route_with_config("/ws", MyHandlerFactory, config);
 ```
+
+### Timeout Behavior
+
+- **`max_connection_duration`**: Hard limit on connection lifetime. Connection will be closed after this duration regardless of activity.
+- **`idle_timeout`**: Connection closes after this duration of no messages. Resets on any incoming message (text, binary, ping/pong).
+- When both timeouts are set, the shorter one takes effect
+- Timeout disconnections trigger `on_disconnect` with `DisconnectReason::Timeout(message)`
 
 ## Advanced Usage
 

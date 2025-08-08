@@ -221,6 +221,8 @@ async fn test_connection_limit() {
 
     let config = ConnectionConfig {
         max_connections: Some(2),
+        max_connection_duration: None,
+        idle_timeout: None,
     };
 
     let app = websocket_route_with_config("/ws", factory, config);
@@ -419,5 +421,245 @@ async fn test_headers_passed_to_factory() {
     // Should receive initial message indicating no custom header
     if let Some(Ok(TMessage::Text(text))) = read.next().await {
         assert_eq!(text, "no-header");
+    }
+}
+
+#[tokio::test]
+async fn test_max_connection_duration_timeout() {
+    let state = Arc::new(Mutex::new(TestState::default()));
+    let factory = TestHandlerFactory {
+        state: state.clone(),
+    };
+
+    // Set a short max connection duration
+    let config = ConnectionConfig {
+        max_connections: None,
+        max_connection_duration: Some(Duration::from_millis(500)),
+        idle_timeout: None,
+    };
+
+    let app = websocket_route_with_config("/ws", factory, config);
+    let (addr, _handle) = start_server_with_app(app).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    // Connect to the WebSocket
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send a message to confirm connection works
+    write
+        .send(TMessage::Text("hello".to_string()))
+        .await
+        .expect("Failed to send message");
+
+    // Read the echo response
+    if let Some(Ok(TMessage::Text(text))) = read.next().await {
+        assert_eq!(text, "echo: hello");
+    }
+
+    // Wait for the connection to timeout
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    // Try to receive - should get None or error as connection is closed
+    let read_result = tokio::time::timeout(Duration::from_millis(200), read.next()).await;
+    match read_result {
+        Ok(None) => {}                         // Connection closed
+        Ok(Some(Err(_))) => {}                 // Connection error
+        Ok(Some(Ok(TMessage::Close(_)))) => {} // Close frame received
+        Err(_) => {}                           // Timeout waiting - connection dead
+        _ => panic!("Expected connection to be closed"),
+    }
+
+    // Check disconnect reason
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    {
+        let test_state = state.lock().await;
+        assert!(test_state.disconnected, "Handler should be disconnected");
+        assert!(test_state
+            .disconnect_reason
+            .as_ref()
+            .unwrap()
+            .contains("Timeout"));
+        assert!(test_state
+            .disconnect_reason
+            .as_ref()
+            .unwrap()
+            .contains("Maximum connection duration"));
+    }
+}
+
+#[tokio::test]
+async fn test_idle_timeout() {
+    let state = Arc::new(Mutex::new(TestState::default()));
+    let factory = TestHandlerFactory {
+        state: state.clone(),
+    };
+
+    // Set a short idle timeout
+    let config = ConnectionConfig {
+        max_connections: None,
+        max_connection_duration: None,
+        idle_timeout: Some(Duration::from_millis(300)),
+    };
+
+    let app = websocket_route_with_config("/ws", factory, config);
+    let (addr, _handle) = start_server_with_app(app).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    // Connect to the WebSocket
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send a message to confirm connection works
+    write
+        .send(TMessage::Text("hello".to_string()))
+        .await
+        .expect("Failed to send message");
+
+    // Read the echo response
+    if let Some(Ok(TMessage::Text(text))) = read.next().await {
+        assert_eq!(text, "echo: hello");
+    }
+
+    // Wait for idle timeout (no messages sent)
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Try to receive - should get None or error as connection is closed
+    let read_result = tokio::time::timeout(Duration::from_millis(200), read.next()).await;
+    match read_result {
+        Ok(None) => {}                         // Connection closed
+        Ok(Some(Err(_))) => {}                 // Connection error
+        Ok(Some(Ok(TMessage::Close(_)))) => {} // Close frame received
+        Err(_) => {}                           // Timeout waiting - connection dead
+        _ => panic!("Expected connection to be closed due to idle timeout"),
+    }
+
+    // Check disconnect reason
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    {
+        let test_state = state.lock().await;
+        assert!(test_state.disconnected, "Handler should be disconnected");
+        assert!(test_state
+            .disconnect_reason
+            .as_ref()
+            .unwrap()
+            .contains("Timeout"));
+        assert!(test_state
+            .disconnect_reason
+            .as_ref()
+            .unwrap()
+            .contains("Idle"));
+    }
+}
+
+#[tokio::test]
+async fn test_idle_timeout_reset_on_activity() {
+    let state = Arc::new(Mutex::new(TestState::default()));
+    let factory = TestHandlerFactory {
+        state: state.clone(),
+    };
+
+    // Set idle timeout
+    let config = ConnectionConfig {
+        max_connections: None,
+        max_connection_duration: None,
+        idle_timeout: Some(Duration::from_millis(400)),
+    };
+
+    let app = websocket_route_with_config("/ws", factory, config);
+    let (addr, _handle) = start_server_with_app(app).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    // Connect to the WebSocket
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send messages periodically to keep connection alive
+    for i in 0..5 {
+        tokio::time::sleep(Duration::from_millis(200)).await; // Less than idle timeout
+
+        write
+            .send(TMessage::Text(format!("msg{i}")))
+            .await
+            .expect("Failed to send message");
+
+        // Read the echo response
+        if let Some(Ok(TMessage::Text(text))) = read.next().await {
+            assert_eq!(text, format!("echo: msg{i}"));
+        }
+    }
+
+    // Connection should still be alive
+    {
+        let test_state = state.lock().await;
+        assert!(
+            !test_state.disconnected,
+            "Handler should still be connected"
+        );
+        assert_eq!(test_state.messages_received.len(), 5);
+    }
+
+    // Now wait for idle timeout
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Connection should be closed due to idle
+    {
+        let test_state = state.lock().await;
+        assert!(
+            test_state.disconnected,
+            "Handler should be disconnected due to idle"
+        );
+        assert!(test_state
+            .disconnect_reason
+            .as_ref()
+            .unwrap()
+            .contains("Idle"));
+    }
+}
+
+#[tokio::test]
+async fn test_both_timeouts_shorter_wins() {
+    let state = Arc::new(Mutex::new(TestState::default()));
+    let factory = TestHandlerFactory {
+        state: state.clone(),
+    };
+
+    // Set both timeouts - idle is shorter
+    let config = ConnectionConfig {
+        max_connections: None,
+        max_connection_duration: Some(Duration::from_secs(2)),
+        idle_timeout: Some(Duration::from_millis(300)),
+    };
+
+    let app = websocket_route_with_config("/ws", factory, config);
+    let (addr, _handle) = start_server_with_app(app).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    // Connect to the WebSocket
+    let (_ws_stream, _) = connect_async(&ws_url)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    // Wait for timeout - idle should trigger first
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Check that idle timeout was triggered (not max duration)
+    {
+        let test_state = state.lock().await;
+        assert!(test_state.disconnected, "Handler should be disconnected");
+        assert!(test_state
+            .disconnect_reason
+            .as_ref()
+            .unwrap()
+            .contains("Idle"));
     }
 }

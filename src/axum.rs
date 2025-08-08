@@ -201,6 +201,8 @@ where
 ///
 /// let config = ConnectionConfig {
 ///     max_connections: Some(1000),
+///     max_connection_duration: None,
+///     idle_timeout: None,
 /// };
 ///
 /// let app = websocket_route_with_config("/ws", MyHandlerFactory, config);
@@ -345,6 +347,8 @@ mod tests {
     fn test_websocket_route_with_config_creation() {
         let config = ConnectionConfig {
             max_connections: Some(100),
+            max_connection_duration: None,
+            idle_timeout: None,
         };
         let _app = websocket_route_with_config("/ws", TestFactory, config);
         // If this compiles and doesn't panic, the route was created successfully
